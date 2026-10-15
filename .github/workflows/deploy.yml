@@ -1,0 +1,5 @@
+- name: Authenticate to Google Cloud via Keyless WIF
+  uses: google-github-actions/auth@v2
+  with:
+    workload_identity_provider: 'projects/411369932113/locations/global/workloadIdentityPools/wif-aepl-github-pool/providers/wif-github-provider'
+    service_account: 'sa-github-deployer@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com'
