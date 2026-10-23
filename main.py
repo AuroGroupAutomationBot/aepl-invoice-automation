@@ -48,7 +48,7 @@ from google.genai import types
 
 PROJECT_ID = os.environ.get("GCP_PROJECT", "prj-aepl-ai-inv-auto-dev")
 
-LOCATION = os.environ.get("GCP_LOCATION", "asia-south1")
+LOCATION = os.environ.get("GCP_LOCATION", "us-central1")
 
 RAW_ALLOWED_DOMAINS = os.environ.get("ALLOWED_EMAIL_DOMAINS", os.environ.get("ALLOWED_EMAIL_DOMAIN", "ent.aurogroup.com;aurogroup.com"))
 
@@ -65,7 +65,8 @@ os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID
 
 os.environ["GOOGLE_CLOUD_LOCATION"] = LOCATION
- 
+
+client = genai.Client()
 # Safe Firebase Initialization
 
 try:
