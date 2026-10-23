@@ -30,7 +30,7 @@ from google.adk.agents.context_cache_config import ContextCacheConfig
 PROJECT_ID = os.environ.get("GCP_PROJECT", "prj-aepl-ai-inv-auto-dev")
 LOCATION = os.environ.get("GCP_LOCATION", "asia-south1")
 RAW_ALLOWED_DOMAINS = os.environ.get("ALLOWED_EMAIL_DOMAINS", os.environ.get("ALLOWED_EMAIL_DOMAIN", "ent.aurogroup.com;aurogroup.com"))
-RAW_ALLOWED_EMAILS = os.environ.get("ALLOWED_EMAILS", "")
+RAW_ALLOWED_EMAILS = os.environ.get("ALLOWED_EMAILS", os.environ.get("ALLOWED_EMAILS", "aic1176@aurogroup.com;abigna.k@aurogroup.com;mohithsai.g@axisclinicals;hasith.g@aurogroup.com"))
 MODEL_ARMOR_TEMPLATE_ID = os.environ.get("MODEL_ARMOR_TEMPLATE_ID", "tpl-aepl-inv-armor")
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # Strict 10 MB per file RAM limit
 
