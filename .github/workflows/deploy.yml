@@ -26,20 +26,13 @@ jobs:
         with:
           version: 'latest'
 
-      - name: Build Container via Scoped Cloud Build SA (useBuildServiceAccount Policy)
-        run: |
-          IMAGE_URI="asia-south1-docker.pkg.dev/prj-aepl-ai-inv-auto-dev/ar-aepl-inv-sec/sap-engine:${{ github.sha }}"
-          gcloud builds submit --tag="${IMAGE_URI}" \
-            --region=asia-south1 \
-            --service-account="projects/prj-aepl-ai-inv-auto-dev/serviceAccounts/sa-cicd-builder@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
-            --gcs-source-staging-dir="gs://bkt-prj-aepl-ai-inv-auto-dev-build-staging/source"
-
-      - name: Deploy Public API / Website to Cloud Run (2 vCPU, 2 GiB, Scale-to-Zero)
+      - name: Build and Deploy to Cloud Run from Source
         run: |
           gcloud run deploy sap-invoice-engine \
-            --image="asia-south1-docker.pkg.dev/prj-aepl-ai-inv-auto-dev/ar-aepl-inv-sec/sap-engine:${{ github.sha }}" \
+            --source . \
             --region=asia-south1 \
             --service-account="sa-invoice-brain@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
+            --build-service-account="sa-cicd-builder@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
             --network=vpc-aepl-inv-sec \
             --subnet=sub-aepl-mumbai \
             --vpc-egress=all-traffic \
