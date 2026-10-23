@@ -46,5 +46,5 @@ jobs:
             --min-instances=0 \
             --max-instances=4 \
             --labels="company=aepl,env=dev,project=prj-aepl-ai-inv-auto-dev,cost-center=ap-automation" \
-            --set-env-vars="GCP_PROJECT=prj-aepl-ai-inv-auto-dev,GCP_LOCATION=asia-south1,ALLOWED_EMAIL_DOMAINS=ent.aurogroup.com;aurogroup.com,ALLOWED_EMAILS=aic1176@aurogroup.com;hasith.g@aurogroup.com;mohithsai.g@axisclinicals.com;abigna.k@aurogroup.com,GEMINI_MODEL=gemini-3.8-flash" \
+            --set-env-vars="GCP_PROJECT=prj-aepl-ai-inv-auto-dev,GCP_LOCATION=us-central1,ALLOWED_EMAIL_DOMAINS=ent.aurogroup.com;aurogroup.com;axisclinicals.com,ALLOWED_EMAILS=aic1176@aurogroup.com;hasith.g@aurogroup.com;mohithsai.g@axisclinicals.com;abigna.k@aurogroup.com,GEMINI_MODEL=gemini-3.8-flash" \
             --set-secrets="SAP_TOKEN_URL=SAP_TOKEN_URL:1,SAP_CLIENT_ID=SAP_CLIENT_ID:1,SAP_CLIENT_SECRET=SAP_CLIENT_SECRET:1,SAP_CPI_URI=SAP_CPI_URI:1"
