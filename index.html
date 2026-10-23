@@ -1,21 +1,246 @@
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AEPL Autonomous SAP Invoice Parking</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f4f8; display: flex; justify-content: center; align-items: center; min-height: 90vh; margin: 0; }
+    .card { background: #ffffff; padding: 36px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); width: 500px; }
+    h2 { margin: 12px 0 6px 0; color: #0f172a; }
+    .badge { background: #dbeafe; color: #1e40af; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; display: inline-block; }
+    .user-bar { background: #f8fafc; border: 1px solid #e2e8f0; padding: 10px 14px; border-radius: 8px; margin: 16px 0; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+    .email-input { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; margin-bottom: 12px; box-sizing: border-box; }
+    .drop-zone { border: 2px dashed #3b82f6; border-radius: 8px; padding: 28px; text-align: center; margin: 18px 0; background: #f8fafc; cursor: pointer; width: 88%; }
+    button { background: #0078d4; color: white; border: none; padding: 13px 20px; border-radius: 6px; width: 100%; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #106ebe; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    .btn-logout { background: transparent; color: #dc2626; border: 1px solid #dc2626; padding: 4px 10px; width: auto; font-size: 12px; }
+    pre { background: #0f172a; color: #38bdf8; padding: 14px; border-radius: 8px; overflow-x: auto; font-size: 12px; display: none; margin-top: 16px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">Zero-Storage RAM Pipeline • Model Armor Protected</span>
+    <h2>AEPL SAP Invoice Engine</h2>
+    <p style="color:#475569; font-size:14px; margin-bottom:20px;">
+      Sign in with your authorized corporate email link to park PO invoices into SAP S/4HANA (<code>MIR7</code>) & DmacQ DMS.
+    </p>
 
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
-  apiKey: "AIzaSyDihoXXCEGIPirLVZIb4GbOtQbZ7WyLuyo",
-  authDomain: "prj-aepl-ai-inv-auto-dev.firebaseapp.com",
-  projectId: "prj-aepl-ai-inv-auto-dev",
-  storageBucket: "prj-aepl-ai-inv-auto-dev.firebasestorage.app",
-  messagingSenderId: "411369932113",
-  appId: "1:411369932113:web:24c9043aec89a999ccbf70",
-  measurementId: "G-LXD4FVLDXD"
-};
+    <!-- Passwordless Email Link Sign-In Section -->
+    <div id="loginSection">
+      <input type="email" id="emailInput" class="email-input" placeholder="Enter corporate email (e.g. user@ent.aurogroup.com)" />
+      <button id="sendLinkBtn" onclick="sendPasswordlessLink()">Send Passwordless Sign-In Link</button>
+    </div>
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
+    <!-- Authenticated Upload Section -->
+    <div id="appSection" style="display:none;">
+      <div class="user-bar">
+        <span id="userEmailDisplay"></span>
+        <button class="btn-logout" onclick="logoutUser()">Sign Out</button>
+      </div>
+      <input type="file" id="fileInput" multiple accept=".pdf,.png,.jpg,.jpeg" class="drop-zone" />
+      <button id="uploadBtn" onclick="submitInvoice()">Park Invoice in SAP & DmacQ</button>
+    </div>
+
+    <pre id="resultBox"></pre>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+    import {
+      getAuth,
+      sendSignInLinkToEmail,
+      isSignInWithEmailLink,
+      signInWithEmailLink,
+      signOut,
+      onAuthStateChanged
+    } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+
+    // 1. REPLACE apiKey WITH YOUR FIREBASE WEB API KEY FROM STEP 6
+    const firebaseConfig = {
+      apiKey: "AIzaSyDihoXXCEGIPirLVZIb4GbOtQbZ7WyLuyo",
+      authDomain: "prj-aepl-ai-inv-auto-dev.firebaseapp.com",
+      projectId: "prj-aepl-ai-inv-auto-dev",
+    };
+
+    // 2. ACCESS CONTROL CONFIGURATION (Matches Backend Gate 1)
+    // Allowed corporate domains (lowercase, without '@'):
+    const ALLOWED_DOMAINS = ["ent.aurogroup.com", "aurogroup.com"];
+    // Optional explicit email allowlist.
+    // Leave empty [] to allow all emails from ALLOWED_DOMAINS.
+    // Or populate e.g. ["aic1176@aurogroup.com", "ap@ent.aurogroup.com"] to restrict ONLY to these specific emails:
+    const ALLOWED_EMAILS = ["aic1176@aurogroup.com", "hasith.g@aurogroup.com", "mohithsai.g@axisclinicals.com", "abigna.k@aurogroup.com"];
+
+    function isEmailAuthorized(rawEmail) {
+      const email = (rawEmail || "").trim().toLowerCase();
+      if (!email || !email.includes("@")) return false;
+      const domain = email.split("@").pop();
+      const domainOk = ALLOWED_DOMAINS.length === 0 || ALLOWED_DOMAINS.includes(domain);
+      const emailListOk = ALLOWED_EMAILS.length === 0 || ALLOWED_EMAILS.map(e => e.toLowerCase()).includes(email);
+      return domainOk && emailListOk;
+    }
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    // 3. COMPLETE PASSWORDLESS SIGN-IN WHEN USER CLICKS EMAIL MAGIC LINK
+    async function completeEmailLinkSignInIfPresent() {
+      if (isSignInWithEmailLink(auth, window.location.href)) {
+        const out = document.getElementById("resultBox");
+        out.style.display = "block";
+        out.style.color = "#38bdf8";
+        out.innerText = "Completing passwordless email verification...";
+
+        let email = window.localStorage.getItem("emailForSignIn");
+        if (!email) {
+          email = window.prompt("Please confirm your corporate email address to complete sign-in:");
+        }
+
+        if (!isEmailAuthorized(email)) {
+          window.localStorage.removeItem("emailForSignIn");
+          window.history.replaceState({}, document.title, window.location.pathname);
+          out.style.color = "#f87171";
+          out.innerText = "Access Denied: Email address is not on the authorized domain/email allowlist.";
+          return;
+        }
+
+        try {
+          await signInWithEmailLink(auth, email.trim(), window.location.href);
+          window.localStorage.removeItem("emailForSignIn");
+          // Strip one-time oobCode from URL bar so page refresh doesn't fail
+          window.history.replaceState({}, document.title, window.location.pathname);
+          out.style.display = "none";
+        } catch (err) {
+          window.history.replaceState({}, document.title, window.location.pathname);
+          out.style.color = "#f87171";
+          out.innerText = "Email Link Sign-In Error: " + err.message;
+        }
+      }
+    }
+
+    completeEmailLinkSignInIfPresent();
+
+    // 4. MONITOR AUTH STATE & ENFORCE DOMAIN/EMAIL POLICY
+    onAuthStateChanged(auth, async (user) => {
+      const loginSec = document.getElementById("loginSection");
+      const appSec = document.getElementById("appSection");
+      const out = document.getElementById("resultBox");
+
+      if (user) {
+        if (!isEmailAuthorized(user.email)) {
+          await signOut(auth);
+          out.style.display = "block";
+          out.style.color = "#f87171";
+          out.innerText = "Access Denied: Your email (" + user.email + ") is not authorized for this application.";
+          return;
+        }
+        document.getElementById("userEmailDisplay").innerText = "Verified: " + user.email;
+        loginSec.style.display = "none";
+        appSec.style.display = "block";
+      } else {
+        loginSec.style.display = "block";
+        appSec.style.display = "none";
+      }
+    });
+
+    // 5. SEND MAGIC SIGN-IN LINK TO CORPORATE EMAIL
+    window.sendPasswordlessLink = async () => {
+      const emailInput = document.getElementById("emailInput");
+      const btn = document.getElementById("sendLinkBtn");
+      const out = document.getElementById("resultBox");
+      const email = (emailInput.value || "").trim().toLowerCase();
+
+      if (!isEmailAuthorized(email)) {
+        out.style.display = "block";
+        out.style.color = "#f87171";
+        out.innerText = "Access Denied: Only authorized corporate emails (" + ALLOWED_DOMAINS.join(", ") + ") are permitted.";
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerText = "Sending Sign-In Link...";
+      out.style.display = "block";
+      out.style.color = "#38bdf8";
+      out.innerText = "Dispatching cryptographic sign-in link to " + email + "...";
+
+      try {
+        const actionCodeSettings = {
+          url: window.location.origin + window.location.pathname,
+          handleCodeInApp: true
+        };
+        await sendSignInLinkToEmail(auth, email, actionCodeSettings);
+        window.localStorage.setItem("emailForSignIn", email);
+        out.style.color = "#4ade80";
+        out.innerText = "Sign-in link sent to " + email + ".\nOpen your email inbox and click the link to sign in.";
+      } catch (err) {
+        out.style.color = "#f87171";
+        out.innerText = "Failed to send sign-in link: " + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Send Passwordless Sign-In Link";
+      }
+    };
+
+    window.logoutUser = async () => {
+      await signOut(auth);
+      document.getElementById("resultBox").style.display = "none";
+    };
+
+    window.submitInvoice = async () => {
+      const input = document.getElementById("fileInput");
+      const btn = document.getElementById("uploadBtn");
+      const out = document.getElementById("resultBox");
+
+      if (!input.files.length) {
+        alert("Please select an invoice PDF or image first.");
+        return;
+      }
+      if (!auth.currentUser) {
+        alert("Please sign in with your corporate email link first.");
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerText = "Processing in RAM -> Model Armor -> Gemini -> SAP CPI...";
+      out.style.display = "block";
+      out.style.color = "#38bdf8";
+      out.innerText = "Verifying Firebase Email JWT -> Model Armor PDF Inspection -> Gemini Extraction -> SAP BAPI...";
+
+      try {
+        const idToken = await auth.currentUser.getIdToken(true);
+        const formData = new FormData();
+        for (const file of input.files) {
+          formData.append("files", file);
+        }
+
+        const res = await fetch("/api/park-invoice", {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + idToken,
+            "X-Firebase-Token": idToken
+          },
+          body: formData
+        });
+
+        const rawText = await res.text();
+        let data;
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          data = { status: "HTTP_ERROR", code: res.status, detail: rawText };
+        }
+
+        out.style.color = res.ok ? "#4ade80" : "#f87171";
+        out.innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        out.style.color = "#f87171";
+        out.innerText = "Pipeline Error: " + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Park Invoice in SAP & DmacQ";
+      }
+    };
+  </script>
+</body>
+</html>
