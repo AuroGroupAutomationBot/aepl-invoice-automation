@@ -13,4 +13,4 @@ RUN chown -R appuser:appgroup /app
 
 USER 10001:10001
 EXPOSE 8080
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--no-server-header"]
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --no-server-header"]
