@@ -1,0 +1,57 @@
+name: Deploy AEPL SAP Invoice Engine to Cloud Run
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud via Keyless WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/411369932113/locations/global/workloadIdentityPools/wif-aepl-github-pool/providers/wif-github-provider'
+          service_account: 'sa-github-deployer@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com'
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          version: 'latest'
+
+      - name: Build Container via Scoped Cloud Build SA (useBuildServiceAccount Policy)
+        run: |
+          IMAGE_URI="asia-south1-docker.pkg.dev/prj-aepl-ai-inv-auto-dev/ar-aepl-inv-sec/sap-engine:${{ github.sha }}"
+          gcloud builds submit --tag="${IMAGE_URI}" \
+            --region=asia-south1 \
+            --service-account="projects/prj-aepl-ai-inv-auto-dev/serviceAccounts/sa-cicd-builder@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
+            --gcs-source-staging-dir="gs://bkt-prj-aepl-ai-inv-auto-dev-build-staging/source"
+
+      - name: Deploy Public API / Website to Cloud Run (2 vCPU, 2 GiB, Scale-to-Zero)
+        run: |
+          gcloud run deploy sap-invoice-engine \
+            --image="asia-south1-docker.pkg.dev/prj-aepl-ai-inv-auto-dev/ar-aepl-inv-sec/sap-engine:${{ github.sha }}" \
+            --region=asia-south1 \
+            --service-account="sa-invoice-brain@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
+            --network=vpc-aepl-inv-sec \
+            --subnet=sub-aepl-mumbai \
+            --vpc-egress=all-traffic \
+            --ingress=all \
+            --no-invoker-iam-check \
+            --timeout=300 \
+            --cpu-throttling \
+            --cpu=2 \
+            --memory=2Gi \
+            --concurrency=4 \
+            --min-instances=0 \
+            --max-instances=4 \
+            --labels="company=aepl,env=dev,project=prj-aepl-ai-inv-auto-dev,cost-center=ap-automation" \
+            --set-env-vars="GCP_PROJECT=prj-aepl-ai-inv-auto-dev,GCP_LOCATION=asia-south1,ALLOWED_EMAIL_DOMAINS=ent.aurogroup.com;aurogroup.com,ALLOWED_EMAILS=aic1176@aurogroup.com;hasith.g@aurogroup.com;mohithsai.g@axisclinicals.com;abigna.k@aurogroup.com,GEMINI_MODEL=gemini-3.8-flash" \
+            --set-secrets="SAP_TOKEN_URL=SAP_TOKEN_URL:1,SAP_CLIENT_ID=SAP_CLIENT_ID:1,SAP_CLIENT_SECRET=SAP_CLIENT_SECRET:1,SAP_CPI_URI=SAP_CPI_URI:1"
