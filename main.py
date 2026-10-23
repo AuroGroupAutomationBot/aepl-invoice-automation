@@ -19,7 +19,7 @@ from google.genai import types
 from google.adk import Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from google.adk.apps.app import App
+from google.adk.apps import App
 from google.adk.agents.context_cache_config import ContextCacheConfig
 
 # ---------------------------------------------------------
