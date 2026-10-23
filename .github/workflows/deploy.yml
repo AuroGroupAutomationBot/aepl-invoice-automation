@@ -32,7 +32,7 @@ jobs:
             --source . \
             --region=asia-south1 \
             --service-account="sa-invoice-brain@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
-            --build-service-account="sa-cicd-builder@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
+            --build-service-account="projects/prj-aepl-ai-inv-auto-dev/serviceAccounts/sa-cicd-builder@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
             --network=vpc-aepl-inv-sec \
             --subnet=sub-aepl-mumbai \
             --vpc-egress=all-traffic \
