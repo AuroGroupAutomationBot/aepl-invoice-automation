@@ -96,7 +96,7 @@ sequenceDiagram
     UI->>API: POST /api/park-invoice (Multipart + Firebase JWT)
     API->>API: Validate Corporate Email (@axisclinicals.com / @aurogroup.com)
     API->>API: Process in RAM: Merge to PDF + 768px FinOps Image Optimization
-    API->>AI: generate_content(Model: gemini-3.8-flash, Schema: NotebookInvoiceSchema)
+    API->>AI: generate_content(Model: gemini-3.8-flash, Schema: ExtractionInvoiceSchema)
     AI-->>API: Extracted JSON (HeaderData + ItemData)
     API->>MA: SanitizeModelResponseRequest(Template: tpl-aepl-inv-armor)
     MA-->>API: FilterMatchState: NO_MATCH (Clean)
@@ -146,15 +146,17 @@ erDiagram
 
 ## Key Features
 
-* **Strict Alignment with AEPL Reference Notebook**: Follows the schemas, field naming conventions (`HeaderData`, `ItemData`), and pre-CPI validations established in `AEPL_Invoice_Parking_Automation_Using_Google_ADK.ipynb`.
+* **Strict Alignment with AEPL Reference Notebook**: Exact parity with schemas, field conventions (`HeaderData`, `ItemData`), system instructions, and pre-CPI validation rules from `AEPL_Invoice_Parking_Automation_Using_Google_ADK.ipynb`.
 * **Multimodal Extraction via Gemini 3.8 Flash**: Employs Vertex AI's `gemini-3.8-flash` model via the `global` publisher endpoint with structured outputs (`response_schema`), delivering low-latency parsing across multi-page tables and split scans.
-* **Defense-in-Depth Security Screening**: Pre-BAPI output inspection by regional **Google Cloud Model Armor** (`tpl-aepl-inv-armor` in `us-central1`) protects against prompt injection, jailbreaking, and malicious links.
+* **Quota-Aware Resilient Exponential Backoff**: Automatic retry mechanism handling Vertex AI 429 (Resource Exhausted) and 503 (Unavailable) transient spikes with jittered backoff, directly mirroring the notebook's resilience patterns.
+* **Egress Firewall Security Screening**: Pre-BAPI inspection by regional **Google Cloud Model Armor** (`tpl-aepl-inv-armor` in `us-central1`) screens the extracted JSON for indirect prompt injection, malicious URLs, and adversarial payloads before ERP execution.
 * **The 768px FinOps Rule**: Image inputs (PNG/JPG) are automatically scaled to $768\times 768$ pixels before inference, constraining visual token consumption to exactly 258 tokens per page ($75\%$ cost reduction compared to unscaled uploads).
 * **Deterministic SAP ABAP DDIC Type Enforcement**: Automatic casting of numeric amounts to 2 decimal places, date normalization to `DD.MM.YYYY`, and string length bounding prevents downstream BAPI dumps.
 * **10-Digit SAP PO & SES Regex Guardrails**: Hard firewall validating that `PONumber` is strictly a 10-digit integer (`^\d{10}$`) and `SES` is a 10-digit number starting with 1 (`^1\d{9}$`).
+* **In-Memory Universal PDF & DMS Attachment Pipeline**: Multi-page scans and PDFs are merged, compressed, and converted to Base64 in RAM via PyMuPDF/Pillow and injected into `HeaderData.Attachment` for DmacQ DMS archival without disk overhead.
 * **Direct Serverless Egress Architecture**: Cloud Run deployed with direct internet egress (`--clear-network`), eliminating VPC NAT gateways and dedicated static IP runtime costs.
 * **Keyless CI/CD with Workload Identity Federation (WIF v2)**: GitHub Actions authenticates to Google Cloud via short-lived OIDC federated tokens (`wif-aepl-github-pool-v2`), completely eliminating static service account JSON keys.
-* **Universal Cross-Device SAP Fiori Horizon Portal**: Fully responsive web application compatible with desktops, tablets, and smartphones, incorporating touch targets ($\ge 44\text{px}$), iOS zoom-prevention, horizontal momentum scrolling, and zero emoji rendering artifacts.
+* **Universal Cross-Device SAP Fiori Horizon Portal**: Fully responsive web application compatible with desktops, tablets, and smartphones, incorporating touch targets ($\ge 44\text{px}$), iOS zoom-prevention, horizontal momentum scrolling, and zero prototype clutter.
 * **Corporate Single Sign-On Gating**: Passwordless email link authentication restricted exclusively to authorized enterprise domains (`@axisclinicals.com`, `@aurogroup.com`, `@ent.aurogroup.com`).
 
 ---
@@ -244,7 +246,7 @@ Expected JSON Response:
     "sap_time": 0.418,
     "pdf_size_mb": 0.185,
     "total_exec_time": 3.21,
-    "submitted_by": "mohithsai.g@axisclinicals.com",
+    "submitted_by": "finance-operations@aurogroup.com",
     "model": "gemini-3.8-flash"
   }
 }

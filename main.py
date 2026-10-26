@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import time
 import uuid
@@ -89,7 +90,7 @@ class ItemDataModel(BaseModel):
     ItemAmount: Optional[float] = Field(default=None, description="Total basic line amount before taxes (Quantity * Rate)")
 
 
-class HeaderDataModel(BaseModel):
+class ExtractionHeaderDataModel(BaseModel):
     RefDocNo: Optional[str] = Field(default=None, description="Vendor Tax Invoice Number")
     DocDate: Optional[str] = Field(default=None, description="Invoice Date strictly converted and output as DD.MM.YYYY")
     PONumber: Optional[str] = Field(default=None, description="10-digit SAP Purchase Order Number, purely numeric")
@@ -99,11 +100,10 @@ class HeaderDataModel(BaseModel):
     BusinessPlace: Optional[str] = Field(default=None, description="Business Place code based on Buyer GSTIN: 2701, 2702, 3701, 3601")
     TaxableVal: Optional[float] = Field(default=None, description="Overall total net taxable value on the invoice before GST")
     TotalInvVal: Optional[float] = Field(default=None, description="Final grand total invoice amount inclusive of all taxes")
-    Attachment: Optional[str] = Field(default=None, description="Base64 encoded PDF string")
 
 
-class NotebookInvoiceSchema(BaseModel):
-    HeaderData: HeaderDataModel
+class ExtractionInvoiceSchema(BaseModel):
+    HeaderData: ExtractionHeaderDataModel
     ItemData: List[ItemDataModel]
 
 
@@ -125,7 +125,7 @@ BAPI_JSON_SCHEMA = {
                 "TotalInvVal": {"type": ["number", "null"]},
                 "Attachment": {"type": ["string", "null"]},
             },
-            "required": ["DocDate", "RefDocNo", "PONumber", "SES", "CompName", "CompCode", "BusinessPlace", "TaxableVal", "TotalInvVal"],
+            "required": ["DocDate", "RefDocNo", "PONumber", "SES", "CompName", "CompCode", "BusinessPlace", "TaxableVal", "TotalInvVal", "Attachment"],
         },
         "ItemData": {
             "type": "array",
@@ -191,19 +191,23 @@ def validate_sap_schema(trace_id: str, payload_dict: dict) -> str:
     ses_number = header.get("SES")
     taxable_val = header.get("TaxableVal")
     total_inv_val = header.get("TotalInvVal")
+    attachment = header.get("Attachment")
 
-    # Strict Regex Guardrails for PO and SES
+    # Strict Regex Guardrails for PO and SES (From Notebook)
     if po_number and not re.match(r"^\d{10}$", str(po_number).strip()):
         return f"Business Rule Violation: PONumber '{po_number}' must be exactly 10 digits."
 
     if ses_number and not re.match(r"^1\d{9}$", str(ses_number).strip()):
         return f"Business Rule Violation: SES '{ses_number}' must be exactly 10 digits and start with 1."
 
-    # Invoice Value Validations
+    # Invoice Value Validations (From Notebook)
     if taxable_val is None or float(taxable_val) <= 0:
         return "Business Rule Violation: TaxableVal must be greater than 0."
     if total_inv_val is None or float(total_inv_val) <= 0:
         return "Business Rule Violation: TotalInvVal must be greater than 0."
+
+    if not attachment:
+        return "Business Rule Violation: Attachment (Base64 PDF) is required for DMS archiving."
 
     return "VALID"
 
@@ -245,7 +249,12 @@ def verify_with_model_armor(text_to_screen: str) -> None:
         )
         res = armor_client.sanitize_model_response(request=req)
         match_state = getattr(res.sanitization_result, "filter_match_state", None)
-        if match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND:
+        is_match = (
+            match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND
+            or str(match_state) in ("MATCH_FOUND", "FilterMatchState.MATCH_FOUND")
+            or match_state == 2
+        )
+        if is_match:
             logger.warning(f"Model Armor Security Block: {res.sanitization_result}")
             raise HTTPException(
                 status_code=422,
@@ -280,23 +289,26 @@ def process_media_for_extraction(raw_files: List[tuple]) -> tuple[List[types.Par
             src_pdf = fitz.open(stream=content, filetype="pdf")
             merged_pdf.insert_pdf(src_pdf)
             src_pdf.close()
-        elif content.startswith(b"\x89PNG") or content.startswith(b"\xff\xd8\xff"):
-            # FinOps: Optimize image bytes for Gemini inference
-            optimized_bytes = optimize_image_768px(content)
-            prompt_parts.append(types.Part.from_bytes(data=optimized_bytes, mime_type="image/jpeg"))
-
-            # Convert to PDF page for attachment
-            img = Image.open(io.BytesIO(content)).convert("RGB")
-            img_buf = io.BytesIO()
-            img.save(img_buf, format="PDF")
-            img_pdf = fitz.open(stream=img_buf.getvalue(), filetype="pdf")
-            merged_pdf.insert_pdf(img_pdf)
-            img_pdf.close()
         else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file signature for {filename}. Upload valid PDF, JPG, or PNG.",
-            )
+            try:
+                # FinOps: Optimize image bytes for Gemini inference
+                optimized_bytes = optimize_image_768px(content)
+                prompt_parts.append(types.Part.from_bytes(data=optimized_bytes, mime_type="image/jpeg"))
+
+                # Convert to PDF page for DmacQ DMS attachment
+                with Image.open(io.BytesIO(content)) as img:
+                    rgb_img = img.convert("RGB")
+                    img_buf = io.BytesIO()
+                    rgb_img.save(img_buf, format="PDF")
+                    img_pdf = fitz.open(stream=img_buf.getvalue(), filetype="pdf")
+                    merged_pdf.insert_pdf(img_pdf)
+                    img_pdf.close()
+            except Exception as img_err:
+                logger.error(f"Failed to process image {filename}: {img_err}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported or corrupt file format for '{filename}'. Upload valid PDF, JPG, or PNG.",
+                )
 
     pdf_bytes_raw = merged_pdf.tobytes(deflate=True)
     merged_pdf.close()
@@ -317,7 +329,7 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> dic
         time.sleep(1.0)
         telemetry["cpi_time"] = 1.0
         telemetry["sap_time"] = 0.5
-        doc_no = payload_dict.get("HeaderData", {}).get("RefDocNo") or "5105600001"
+        doc_no = f"5105{random.randint(100000, 999999)}"
         return {
             "status": "SUCCESS",
             "sap_message": f"Document [{doc_no}] parked successfully in SAP S/4HANA (Company Code 1000, Fiscal Year 2026).",
@@ -481,19 +493,32 @@ async def park_invoice(
         "model": GEMINI_MODEL,
     }
 
-    # 2. Multimodal Extraction via Gemini 3.8 Flash using Notebook Schema
-    response = genai_client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt_parts,
-        config=types.GenerateContentConfig(
-            system_instruction=NOTEBOOK_SYSTEM_INSTRUCTION,
-            temperature=0.0,
-            response_mime_type="application/json",
-            response_schema=NotebookInvoiceSchema,
-        ),
-    )
+    # 2. Multimodal Extraction via Gemini with Exponential Backoff (From Notebook)
+    response = None
+    for attempt in range(3):
+        try:
+            response = genai_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt_parts,
+                config=types.GenerateContentConfig(
+                    system_instruction=NOTEBOOK_SYSTEM_INSTRUCTION,
+                    temperature=0.0,
+                    response_mime_type="application/json",
+                    response_schema=ExtractionInvoiceSchema,
+                ),
+            )
+            break
+        except Exception as exc:
+            err_str = str(exc).upper()
+            if any(w in err_str for w in ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE"]) and attempt < 2:
+                sleep_sec = 2.0 * (2 ** attempt)
+                logger.warning(f"Vertex AI demand spike ({exc}). Retrying in {sleep_sec}s (Attempt {attempt+1}/3)...")
+                time.sleep(sleep_sec)
+            else:
+                logger.error(f"Vertex AI generation failed: {exc}")
+                raise HTTPException(status_code=502, detail=f"Vertex AI inference error: {str(exc)}")
 
-    # 3. Security Screening with Model Armor
+    # 3. Security Screening with Model Armor (Post-Extraction Egress Firewall)
     verify_with_model_armor(response.text)
 
     # 4. Parse & Inject PDF Base64 string directly into HeaderData.Attachment (From Notebook)
