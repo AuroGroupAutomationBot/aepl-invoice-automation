@@ -330,17 +330,37 @@ You are an expert Accounts Payable Data Extraction Agent for SAP S/4HANA (MIR7/M
 - ItemQuantity: Numeric quantity.
 - ItemRate: Unit price before taxes exactly as printed.
 - ItemAmount: Total basic line amount before taxes exactly as printed (Quantity * Rate).
+
+Return ONLY valid JSON matching this schema:
+{
+  "HeaderData": {
+    "RefDocNo": "string or null",
+    "DocDate": "string (DD.MM.YYYY) or null",
+    "PONumber": "10-digit string or null",
+    "SES": "10-digit string starting with 1 or null",
+    "CompName": "string or null",
+    "CompCode": "string or null",
+    "BusinessPlace": "string or null",
+    "TaxableVal": "number or null",
+    "TotalInvVal": "number or null"
+  },
+  "ItemData": [
+    {
+      "SlNo": "number or null",
+      "ItemText": "string or null",
+      "ItemQuantity": "number or null",
+      "ItemRate": "number or null",
+      "ItemAmount": "number or null"
+    }
+  ]
+}
+No markdown code blocks, no introductory text.
 """
- 
+
 invoice_agent = Agent(
     name="InvoiceExtractor",
     model=os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
-    instruction=system_instruction,
-    generate_content_config=types.GenerateContentConfig(
-        temperature=0.0,
-        response_mime_type="application/json",
-        response_schema=gemini_schema
-    )
+    instruction=system_instruction
 )
  
 runner = Runner(
