@@ -1,5 +1,8 @@
 FROM python:3.11-slim
 
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 appgroup \
     && useradd -u 10001 -g appgroup -s /sbin/nologin -M appuser
