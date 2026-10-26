@@ -20,6 +20,8 @@ import asyncio
 
 import requests
 
+import traceback
+
 import firebase_admin
 
 from firebase_admin import auth as firebase_auth
@@ -30,7 +32,7 @@ from jsonschema import validate
 
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException
 
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from google.adk.agents import Agent
 
@@ -334,8 +336,11 @@ invoice_agent = Agent(
     name="InvoiceExtractor",
     model=os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"),
     instruction=system_instruction,
-    output_schema=gemini_schema,
-    generate_content_config=types.GenerateContentConfig(temperature=0.0)
+    generate_content_config=types.GenerateContentConfig(
+        temperature=0.0,
+        response_mime_type="application/json",
+        response_schema=gemini_schema
+    )
 )
  
 runner = Runner(
@@ -529,54 +534,39 @@ def submit_to_sap_cpi(trace_id: str, invoice_json_string: str, telemetry: dict) 
     raw_cpi_uri = os.environ.get("SAP_CPI_URI")
  
     if not all([token_url, client_id, client_secret, raw_cpi_uri]):
-
-        raise RuntimeError("SAP CPI Secrets missing from environment.")
+        missing = [k for k, v in [("SAP_TOKEN_URL", token_url), ("SAP_CLIENT_ID", client_id), ("SAP_CLIENT_SECRET", client_secret), ("SAP_CPI_URI", raw_cpi_uri)] if not v]
+        return {"status": "CPI_CONFIG_ERROR", "sap_message": f"SAP CPI Secrets missing: {', '.join(missing)}"}
  
-    cpi_uri = "https://" + [p for p in raw_cpi_uri.split("https://") if p][-1]
+    try:
+        cpi_uri = "https://" + [p for p in raw_cpi_uri.split("https://") if p][-1]
+        with requests.Session() as session:
+            token_resp = session.post(token_url, data={"grant_type": "client_credentials"}, auth=(client_id, client_secret), timeout=15)
+            token_resp.raise_for_status()
+            access_token = token_resp.json()["access_token"]
 
-    with requests.Session() as session:
+            csrf_resp = session.get(cpi_uri, headers={"Authorization": f"Bearer {access_token}", "x-csrf-token": "fetch"}, timeout=15)
+            csrf_token = csrf_resp.headers.get("x-csrf-token")
 
-        token_resp = session.post(token_url, data={"grant_type": "client_credentials"}, auth=(client_id, client_secret), timeout=15)
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Service-Definition": "ZMM_VENDORINV_PARK_AUTOMATE",
+                "x-csrf-token": csrf_token
+            }
+            sap_start = time.time()
+            response = session.post(cpi_uri, headers=headers, json=final_payload, timeout=30)
+            telemetry["sap_time"] = round(time.time() - sap_start, 3)
+            telemetry["cpi_time"] = round(time.time() - cpi_start, 3)
 
-        token_resp.raise_for_status()
-
-        access_token = token_resp.json()["access_token"]
- 
-        csrf_resp = session.get(cpi_uri, headers={"Authorization": f"Bearer {access_token}", "x-csrf-token": "fetch"}, timeout=15)
-
-        csrf_token = csrf_resp.headers.get("x-csrf-token")
- 
-        headers = {
-
-            "Authorization": f"Bearer {access_token}",
-
-            "Content-Type": "application/json",
-
-            "Service-Definition": "ZMM_VENDORINV_PARK_AUTOMATE",
-
-            "x-csrf-token": csrf_token
-
-        }
-
-        sap_start = time.time()
-
-        response = session.post(cpi_uri, headers=headers, json=final_payload, timeout=30)
-
-        telemetry["sap_time"] = round(time.time() - sap_start, 3)
-
+            if response.status_code == 200:
+                sap_resp = response.json().get("Response_VendorInvoice_Park_AEPL", {})
+                if sap_resp.get("Status") == "S":
+                    return {"status": "SUCCESS", "sap_message": sap_resp.get("Message")}
+                return {"status": "SAP_REJECTED", "sap_message": sap_resp.get("Message", "Unknown SAP Business Error")}
+            return {"status": "CPI_HTTP_ERROR", "sap_message": f"HTTP {response.status_code}: {response.text}"}
+    except Exception as cpi_err:
         telemetry["cpi_time"] = round(time.time() - cpi_start, 3)
- 
-        if response.status_code == 200:
-
-            sap_resp = response.json().get("Response_VendorInvoice_Park_AEPL", {})
-
-            if sap_resp.get("Status") == "S":
-
-                return {"status": "SUCCESS", "sap_message": sap_resp.get("Message")}
-
-            return {"status": "SAP_REJECTED", "sap_message": sap_resp.get("Message", "Unknown SAP Business Error")}
-
-        return {"status": "CPI_HTTP_ERROR", "sap_message": f"HTTP {response.status_code}: {response.text}"}
+        return {"status": "CPI_EXCEPTION", "sap_message": f"SAP CPI Network Exception ({type(cpi_err).__name__}): {str(cpi_err)}"}
  
 @async_retry_with_backoff(retries=5)
 
@@ -653,6 +643,15 @@ async def call_adk_agent(trace_id: str, prompt_parts: list, tokens: dict) -> str
 # ---------------------------------------------------------
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    tb = traceback.format_exc()
+    logger.log("ERROR", "GLOBAL", "UNHANDLED_EXCEPTION", str(exc), meta={"traceback": tb})
+    return JSONResponse(
+        status_code=500,
+        content={"status": "SERVER_ERROR", "error_type": type(exc).__name__, "detail": str(exc), "traceback": tb}
+    )
  
 @app.get("/", response_class=HTMLResponse)
 
@@ -799,12 +798,18 @@ async def park_invoice_ephemeral(
             "telemetry": telemetry
 
         }
- 
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        logger.log("ERROR", trace_id, "PIPELINE_ERROR", f"{type(e).__name__}: {str(e)}", meta={"traceback": tb})
+        raise HTTPException(
+            status_code=500,
+            detail=f"{type(e).__name__}: {str(e)}"
+        )
     finally:
-
         del raw_files
-
         del base64_attachment
-
         gc.collect()
  

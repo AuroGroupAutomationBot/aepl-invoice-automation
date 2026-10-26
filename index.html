@@ -175,7 +175,11 @@
         out.innerText = "Sign-in link sent to " + email + ".\nOpen your email inbox and click the link to sign in.";
       } catch (err) {
         out.style.color = "#f87171";
-        out.innerText = "Failed to send sign-in link: " + err.message;
+        if (err.code === "auth/unauthorized-continue-uri" || (err.message && err.message.includes("auth/unauthorized-continue-uri"))) {
+          out.innerText = `Firebase Security Error: Domain not allowlisted.\n\nAdd this exact domain to Firebase Authorized Domains:\n${window.location.hostname}\n\nDirect settings link:\nhttps://console.firebase.google.com/project/prj-aepl-ai-inv-auto-dev/authentication/settings`;
+        } else {
+          out.innerText = "Failed to send sign-in link: " + err.message;
+        }
       } finally {
         btn.disabled = false;
         btn.innerText = "Send Passwordless Sign-In Link";
