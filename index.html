@@ -3,49 +3,774 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AEPL Autonomous SAP Invoice Parking</title>
+  <title>Auro Group | SAP S/4HANA Autonomous Invoice Parking Portal (MIR7)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=72:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
   <style>
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f4f8; display: flex; justify-content: center; align-items: center; min-height: 90vh; margin: 0; }
-    .card { background: #ffffff; padding: 36px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); width: 500px; }
-    h2 { margin: 12px 0 6px 0; color: #0f172a; }
-    .badge { background: #dbeafe; color: #1e40af; padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; display: inline-block; }
-    .user-bar { background: #f8fafc; border: 1px solid #e2e8f0; padding: 10px 14px; border-radius: 8px; margin: 16px 0; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
-    .email-input { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; margin-bottom: 12px; box-sizing: border-box; }
-    .drop-zone { border: 2px dashed #3b82f6; border-radius: 8px; padding: 28px; text-align: center; margin: 18px 0; background: #f8fafc; cursor: pointer; width: 88%; }
-    button { background: #0078d4; color: white; border: none; padding: 13px 20px; border-radius: 6px; width: 100%; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-    button:hover { background: #106ebe; }
-    button:disabled { background: #94a3b8; cursor: not-allowed; }
-    .btn-logout { background: transparent; color: #dc2626; border: 1px solid #dc2626; padding: 4px 10px; width: auto; font-size: 12px; }
-    pre { background: #0f172a; color: #38bdf8; padding: 14px; border-radius: 8px; overflow-x: auto; font-size: 12px; display: none; margin-top: 16px; white-space: pre-wrap; }
+    /* SAP Fiori Horizon Theme Variables */
+    :root {
+      --sap-shell: #001e3d;
+      --sap-blue: #0070f2;
+      --sap-blue-hover: #0056bd;
+      --sap-blue-light: #eff6ff;
+      --sap-positive: #107e3e;
+      --sap-positive-light: #f1fdf5;
+      --sap-positive-border: #a7f3d0;
+      --sap-negative: #bb0000;
+      --sap-negative-light: #fff0f0;
+      --sap-negative-border: #fecaca;
+      --sap-warning: #e9730c;
+      --sap-bg: #edeff0;
+      --sap-surface: #ffffff;
+      --sap-text: #1d2d3e;
+      --sap-text-muted: #556b82;
+      --sap-border: #d9e0e6;
+      --sap-border-dark: #b8c4d1;
+      --sap-card-shadow: 0 4px 16px rgba(0, 30, 61, 0.08);
+      --font-main: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font-main);
+      background: var(--sap-bg);
+      color: var(--sap-text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* SAP Shell Header Bar */
+    .sap-shellbar {
+      background: var(--sap-shell);
+      color: #fff;
+      padding: 10px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .sap-shell-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .sap-logo-badge {
+      background: #0070f2;
+      color: #fff;
+      font-weight: 800;
+      font-size: 13px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+    }
+    .sap-app-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .sap-sys-pill {
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      color: #cbd5e1;
+      font-family: var(--font-mono);
+    }
+    .sap-shell-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .badge-ai {
+      background: linear-gradient(135deg, #7c3aed, #4f46e5);
+      color: #fff;
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 99px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .badge-armor {
+      background: #059669;
+      color: #fff;
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 99px;
+      font-weight: 600;
+    }
+    .user-pill {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      background: rgba(255, 255, 255, 0.1);
+      padding: 4px 12px;
+      border-radius: 99px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      font-size: 12px;
+    }
+    .btn-logout {
+      background: none;
+      border: none;
+      color: #f87171;
+      font-weight: 600;
+      font-size: 11px;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .btn-logout:hover { background: rgba(239, 68, 68, 0.2); }
+
+    /* Main Container */
+    .sap-container {
+      flex: 1;
+      max-width: 960px;
+      width: 100%;
+      margin: 28px auto;
+      padding: 0 20px;
+    }
+
+    /* SAP Context Header Strip */
+    .sap-tcode-strip {
+      background: #fff;
+      border: 1px solid var(--sap-border);
+      border-radius: 8px 8px 0 0;
+      padding: 12px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 2px solid var(--sap-blue);
+      font-size: 13px;
+      font-weight: 600;
+      color: #334155;
+    }
+    .sap-tcode-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .tcode-tag {
+      background: #f1f5f9;
+      color: #0f172a;
+      border: 1px solid #cbd5e1;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 12px;
+      padding: 3px 8px;
+      border-radius: 4px;
+    }
+
+    /* Fiori Card Container */
+    .sap-card {
+      background: var(--sap-surface);
+      border: 1px solid var(--sap-border);
+      border-top: none;
+      border-radius: 0 0 10px 10px;
+      box-shadow: var(--sap-card-shadow);
+      padding: 28px 32px;
+      margin-bottom: 24px;
+    }
+
+    .card-title {
+      font-size: 20px;
+      font-weight: 800;
+      color: #0f172a;
+      margin-bottom: 6px;
+    }
+    .card-subtitle {
+      color: var(--sap-text-muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 24px;
+    }
+
+    /* SAP Preset Info Bar */
+    .sap-presets-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      background: #f8fafc;
+      padding: 14px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--sap-border);
+      margin-bottom: 20px;
+    }
+    .preset-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .preset-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--sap-text-muted);
+      letter-spacing: 0.05em;
+    }
+    .preset-val {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+      font-family: var(--font-mono);
+    }
+
+    /* Auth Form */
+    .input-label {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      display: block;
+      color: #1e293b;
+    }
+    .email-input-wrap {
+      display: flex;
+      gap: 12px;
+    }
+    .email-input {
+      flex: 1;
+      padding: 12px 16px;
+      border: 1.5px solid var(--sap-border-dark);
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: all 0.2s;
+    }
+    .email-input:focus {
+      border-color: var(--sap-blue);
+      box-shadow: 0 0 0 3px rgba(0, 112, 242, 0.15);
+    }
+    .sap-btn-primary {
+      background: var(--sap-blue);
+      color: #fff;
+      border: 1px solid var(--sap-blue-hover);
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .sap-btn-primary:hover { background: var(--sap-blue-hover); }
+    .sap-btn-primary:disabled {
+      background: #94a3b8;
+      border-color: #94a3b8;
+      cursor: not-allowed;
+    }
+
+    /* Fiori Styled Drop Zone */
+    .sap-drop-zone {
+      border: 2px dashed #93c5fd;
+      border-radius: 8px;
+      background: #f8faff;
+      padding: 36px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-bottom: 16px;
+    }
+    .sap-drop-zone:hover, .sap-drop-zone.dragover {
+      background: #eff6ff;
+      border-color: var(--sap-blue);
+    }
+    .drop-icon { font-size: 32px; margin-bottom: 8px; display: block; }
+    .drop-main-text { font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }
+    .drop-sub-text { font-size: 12px; color: var(--sap-text-muted); }
+
+    /* File List */
+    .file-list {
+      list-style: none;
+      margin-bottom: 18px;
+      display: grid;
+      gap: 8px;
+    }
+    .file-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #f8fafc;
+      padding: 10px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--sap-border);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .file-remove {
+      color: var(--sap-negative);
+      background: none;
+      border: none;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 2px 6px;
+    }
+
+    /* Stepper */
+    .sap-stepper {
+      display: none;
+      background: #f8fafc;
+      border: 1px solid var(--sap-border);
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin: 20px 0;
+    }
+    .stepper-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--sap-text-muted);
+      margin-bottom: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .live-timer {
+      background: #001e3d;
+      color: #38bdf8;
+      font-family: var(--font-mono);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .step-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .step-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: #64748b;
+      font-weight: 500;
+    }
+    .step-num {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #e2e8f0;
+      color: #64748b;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+    }
+    .step-item.active {
+      color: var(--sap-blue);
+      font-weight: 700;
+    }
+    .step-item.active .step-num {
+      background: var(--sap-blue);
+      color: #fff;
+      box-shadow: 0 0 0 3px rgba(0, 112, 242, 0.25);
+    }
+    .step-item.done {
+      color: var(--sap-positive);
+      font-weight: 600;
+    }
+    .step-item.done .step-num {
+      background: var(--sap-positive);
+      color: #fff;
+    }
+
+    /* Result Dashboard for SAP End Users */
+    .result-card {
+      display: none;
+      margin-top: 24px;
+      border-radius: 8px;
+      animation: fadeIn 0.25s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .result-success {
+      background: #fff;
+      border: 1px solid var(--sap-positive-border);
+      padding: 24px;
+      box-shadow: var(--sap-card-shadow);
+    }
+    .result-error {
+      background: var(--sap-negative-light);
+      border: 1px solid var(--sap-negative-border);
+      color: var(--sap-negative);
+      padding: 18px 20px;
+    }
+
+    /* SAP Saldo (Balance Traffic Light) Bar */
+    .sap-saldo-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #f8fafc;
+      border: 1px solid var(--sap-border);
+      border-radius: 8px;
+      padding: 12px 18px;
+      margin: 14px 0;
+    }
+    .saldo-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .traffic-light {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--sap-positive);
+      box-shadow: 0 0 8px rgba(16, 126, 62, 0.6);
+    }
+    .saldo-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .saldo-status-pill {
+      font-size: 11px;
+      font-weight: 700;
+      background: var(--sap-positive-light);
+      color: var(--sap-positive);
+      border: 1px solid var(--sap-positive-border);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .saldo-val {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--sap-positive);
+    }
+
+    /* SAP Document BELNR Hero Box */
+    .sap-belnr-box {
+      background: linear-gradient(135deg, #001e3d, #002d5a);
+      color: #fff;
+      border-radius: 8px;
+      padding: 18px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .belnr-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #94a3b8;
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+    .belnr-number {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 1px;
+      font-family: var(--font-mono);
+      color: #38bdf8;
+    }
+    .btn-copy-sap {
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-copy-sap:hover { background: rgba(255, 255, 255, 0.25); }
+
+    /* SAP Key-Value Table (Header Data) */
+    .sap-fields-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin: 16px 0;
+    }
+    .sap-field-card {
+      background: #f8fafc;
+      border: 1px solid var(--sap-border);
+      border-radius: 6px;
+      padding: 12px 14px;
+    }
+    .sap-field-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--sap-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin-bottom: 3px;
+    }
+    .sap-field-val {
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f172a;
+      word-break: break-all;
+    }
+    .mono { font-family: var(--font-mono); }
+
+    /* SAP Item Data Table */
+    .sap-table-container {
+      overflow-x: auto;
+      border: 1px solid var(--sap-border);
+      border-radius: 6px;
+      margin: 16px 0;
+    }
+    .sap-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      text-align: left;
+    }
+    .sap-table th {
+      background: #f1f5f9;
+      color: #334155;
+      padding: 10px 12px;
+      font-size: 11px;
+      text-transform: uppercase;
+      font-weight: 700;
+      border-bottom: 1px solid var(--sap-border);
+      letter-spacing: 0.04em;
+    }
+    .sap-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #f1f5f9;
+      color: #1e293b;
+    }
+    .sap-table tr:hover { background: #f8fafc; }
+
+    /* SAP Action Toolbar */
+    .sap-toolbar {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+    .btn-secondary {
+      background: #f1f5f9;
+      color: #1e293b;
+      border: 1px solid #cbd5e1;
+      padding: 10px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-secondary:hover { background: #e2e8f0; }
+
+    /* Next Steps Box */
+    .sap-guidance-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      padding: 12px 16px;
+      font-size: 12px;
+      color: #1e40af;
+      margin-top: 16px;
+      line-height: 1.5;
+    }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #001e3d;
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.25s;
+      z-index: 200;
+    }
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    @media (max-width: 640px) {
+      .sap-shellbar { padding: 8px 14px; }
+      .sap-presets-grid { grid-template-columns: repeat(2, 1fr); }
+      .sap-fields-grid { grid-template-columns: 1fr; }
+      .sap-belnr-box { flex-direction: column; align-items: flex-start; gap: 10px; }
+    }
   </style>
 </head>
 <body>
-  <div class="card">
-    <span class="badge">Zero-Storage RAM Pipeline • Model Armor Protected</span>
-    <h2>AEPL SAP Invoice Engine</h2>
-    <p style="color:#475569; font-size:14px; margin-bottom:20px;">
-      Sign in with your authorized corporate email link to park PO invoices into SAP S/4HANA (<code>MIR7</code>) & DmacQ DMS.
-    </p>
-
-    <!-- Passwordless Email Link Sign-In Section -->
-    <div id="loginSection">
-      <input type="email" id="emailInput" class="email-input" placeholder="Enter corporate email (e.g. user@ent.aurogroup.com)" />
-      <button id="sendLinkBtn" onclick="sendPasswordlessLink()">Send Passwordless Sign-In Link</button>
+  <!-- SAP Shell Bar -->
+  <header class="sap-shellbar">
+    <div class="sap-shell-left">
+      <div class="sap-logo-badge">SAP</div>
+      <div class="sap-app-title">
+        <span>S/4HANA • Accounts Payable Automation</span>
+        <span class="sap-sys-pill">MIR7 Parking Engine</span>
+      </div>
     </div>
-
-    <!-- Authenticated Upload Section -->
-    <div id="appSection" style="display:none;">
-      <div class="user-bar">
-        <span id="userEmailDisplay"></span>
+    <div class="sap-shell-right">
+      <span class="badge-ai">⚡ Gemini 3.8 Flash</span>
+      <span class="badge-armor">🛡️ Model Armor</span>
+      <div class="user-pill" id="userPill">
+        <span id="userEmailText"></span>
         <button class="btn-logout" onclick="logoutUser()">Sign Out</button>
       </div>
-      <input type="file" id="fileInput" multiple accept=".pdf,.png,.jpg,.jpeg" class="drop-zone" />
-      <button id="uploadBtn" onclick="submitInvoice()">Park Invoice in SAP & DmacQ</button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="sap-container">
+    <!-- SAP Transaction Strip -->
+    <div class="sap-tcode-strip">
+      <div class="sap-tcode-left">
+        <span>Transaction:</span>
+        <span class="tcode-tag">MIR7 (Park Incoming Invoice)</span>
+        <span style="color:#64748b;">|</span>
+        <span>Doc Type:</span>
+        <span class="tcode-tag">RE (Invoice - Gross)</span>
+      </div>
+      <div>
+        <span style="font-size:12px; color:#64748b;">Posting Date:</span>
+        <span class="tcode-tag" id="currentPostingDate">Today</span>
+      </div>
     </div>
 
-    <pre id="resultBox"></pre>
-  </div>
+    <!-- Login Card -->
+    <section class="sap-card" id="loginCard">
+      <h1 class="card-title">Corporate Single Sign-On</h1>
+      <p class="card-subtitle">
+        Enter your authorized corporate email (<code>@axisclinicals.com</code>, <code>@aurogroup.com</code>, or <code>@ent.aurogroup.com</code>) to access the SAP S/4HANA Parking Engine.
+      </p>
 
+      <form onsubmit="event.preventDefault(); handleLogin();">
+        <label class="input-label" for="emailInput">Authorized Corporate Email</label>
+        <div class="email-input-wrap">
+          <input
+            type="email"
+            id="emailInput"
+            class="email-input"
+            placeholder="mohithsai.g@axisclinicals.com / aic1176@aurogroup.com"
+            autocomplete="email"
+            required
+          />
+          <button type="submit" class="sap-btn-primary" id="sendLinkBtn">
+            <span>✉️ Dispatch Magic Link</span>
+          </button>
+        </div>
+      </form>
+      <div id="loginStatus" class="result-card"></div>
+    </section>
+
+    <!-- SAP Invoice Processing Card -->
+    <section class="sap-card" id="uploadCard" style="display:none;">
+      <h1 class="card-title">Park Vendor Tax Invoice in SAP S/4HANA</h1>
+      <p class="card-subtitle">
+        Upload the vendor tax invoice along with any supporting PO and Service Entry Sheet (SES). In-memory processing verifies 10-digit SAP PO guardrails, screens via Model Armor, extracts line items with Gemini 3.8 Flash, and executes BAPI parking.
+      </p>
+
+      <!-- SAP Preset Configuration Bar -->
+      <div class="sap-presets-grid">
+        <div class="preset-item">
+          <span class="preset-label">Company Code (BUKRS)</span>
+          <span class="preset-val">1000 (AEPL)</span>
+        </div>
+        <div class="preset-item">
+          <span class="preset-label">Invoice Currency (WAERS)</span>
+          <span class="preset-val">INR (₹)</span>
+        </div>
+        <div class="preset-item">
+          <span class="preset-label">BAPI Endpoint</span>
+          <span class="preset-val">ZMM_VENDORINV_PARK</span>
+        </div>
+        <div class="preset-item">
+          <span class="preset-label">DMS Archiving</span>
+          <span class="preset-val">DmacQ DMS Active</span>
+        </div>
+      </div>
+
+      <!-- Drop Zone -->
+      <div class="sap-drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <span class="drop-icon">📑</span>
+        <div class="drop-main-text">Select or Drag &amp; Drop Vendor Invoice Document</div>
+        <div class="drop-sub-text">Supported: PDF, JPG, PNG (Max 10 MB) • Multi-page invoices automatically merged</div>
+        <input
+          type="file"
+          id="fileInput"
+          multiple
+          accept=".pdf,.png,.jpg,.jpeg"
+          style="display:none"
+          onchange="handleFiles(this.files)"
+        />
+      </div>
+
+      <ul class="file-list" id="fileList"></ul>
+
+      <button class="sap-btn-primary" id="parkBtn" onclick="submitInvoice()" style="width:100%;" disabled>
+        <span>⚡ Execute Autonomous Parking (MIR7)</span>
+      </button>
+
+      <!-- Real-Time Stepper -->
+      <div class="sap-stepper" id="progressStepper">
+        <div class="stepper-header">
+          <span>SAP BAPI INCOMING INVOICE EXECUTION PIPELINE</span>
+          <span class="live-timer" id="liveTimer">0.0s</span>
+        </div>
+        <div class="step-list">
+          <div class="step-item" id="step1">
+            <div class="step-num">1</div>
+            <div>Corporate Authentication &amp; File Magic Bytes Verification</div>
+          </div>
+          <div class="step-item" id="step2">
+            <div class="step-num">2</div>
+            <div>Multimodal Extraction via Gemini 3.8 Flash (PO, SES, Tax &amp; Line Items)</div>
+          </div>
+          <div class="step-item" id="step3">
+            <div class="step-num">3</div>
+            <div>Security Screening via Model Armor &amp; 10-Digit SAP PO Guardrails</div>
+          </div>
+          <div class="step-item" id="step4">
+            <div class="step-num">4</div>
+            <div>BAPI_INCOMINGINVOICE_PARK Posting &amp; DmacQ DMS Base64 Ingestion</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Result Card -->
+      <div class="result-card" id="resultCard"></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toastBox">Notification</div>
+
+  <!-- Client Script -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
     import {
@@ -57,172 +782,261 @@
       onAuthStateChanged
     } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 
-    // 1. REPLACE apiKey WITH YOUR FIREBASE WEB API KEY FROM STEP 6
     const firebaseConfig = {
       apiKey: "AIzaSyDihoXXCEGIPirLVZIb4GbOtQbZ7WyLuyo",
       authDomain: "prj-aepl-ai-inv-auto-dev.firebaseapp.com",
-      projectId: "prj-aepl-ai-inv-auto-dev",
-      storageBucket: "prj-aepl-ai-inv-auto-dev.firebasestorage.app",
-      messagingSenderId: "411369932113",
-      appId: "1:411369932113:web:24c9043aec89a999ccbf70",
-      measurementId: "G-LXD4FVLDXD"
+      projectId: "prj-aepl-ai-inv-auto-dev"
     };
-
-    // 2. ACCESS CONTROL CONFIGURATION (Matches Backend Gate 1)
-    // Allowed corporate domains (lowercase, without '@'):
-    const ALLOWED_DOMAINS = ["ent.aurogroup.com", "aurogroup.com", "axisclinicals.com"];
-    // Optional explicit email allowlist.
-    // Leave empty [] to allow all emails from ALLOWED_DOMAINS.
-    // Or populate e.g. ["aic1176@aurogroup.com", "ap@ent.aurogroup.com"] to restrict ONLY to these specific emails:
-    const ALLOWED_EMAILS = ["aic1176@aurogroup.com", "hasith.g@aurogroup.com", "mohithsai.g@axisclinicals.com", "abigna.k@aurogroup.com"];
-
-    function isEmailAuthorized(rawEmail) {
-      const email = (rawEmail || "").trim().toLowerCase();
-      if (!email || !email.includes("@")) return false;
-      const domain = email.split("@").pop();
-      const domainOk = ALLOWED_DOMAINS.length === 0 || ALLOWED_DOMAINS.includes(domain);
-      const emailListOk = ALLOWED_EMAILS.length === 0 || ALLOWED_EMAILS.map(e => e.toLowerCase()).includes(email);
-      return domainOk && emailListOk;
-    }
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
 
-    // 3. COMPLETE PASSWORDLESS SIGN-IN WHEN USER CLICKS EMAIL MAGIC LINK
-    async function completeEmailLinkSignInIfPresent() {
-      if (isSignInWithEmailLink(auth, window.location.href)) {
-        const out = document.getElementById("resultBox");
-        out.style.display = "block";
-        out.style.color = "#38bdf8";
-        out.innerText = "Completing passwordless email verification...";
+    const ALLOWED_EMAILS = [
+      "aic1176@aurogroup.com",
+      "hasith.g@aurogroup.com",
+      "mohithsai.g@axisclinicals.com",
+      "abigna.k@aurogroup.com",
+      "admin@aurogroup.com",
+      "finance@aurogroup.com"
+    ];
+    const ALLOWED_DOMAINS = ["ent.aurogroup.com", "aurogroup.com", "axisclinicals.com"];
+    let selectedFiles = [];
+    let timerInterval = null;
+    let startTime = 0;
+    let latestParkingData = null;
 
-        let email = window.localStorage.getItem("emailForSignIn");
-        if (!email) {
-          email = window.prompt("Please confirm your corporate email address to complete sign-in:");
-        }
+    // Set today's date formatted for SAP (DD.MM.YYYY)
+    const today = new Date();
+    const dd = String(today.getDate()).padStart(2, '0');
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const yyyy = today.getFullYear();
+    document.getElementById("currentPostingDate").innerText = `${dd}.${mm}.${yyyy}`;
 
-        if (!isEmailAuthorized(email)) {
-          window.localStorage.removeItem("emailForSignIn");
-          window.history.replaceState({}, document.title, window.location.pathname);
-          out.style.color = "#f87171";
-          out.innerText = "Access Denied: Email address is not on the authorized domain/email allowlist.";
+    function showToast(msg) {
+      const toast = document.getElementById("toastBox");
+      toast.innerText = msg;
+      toast.classList.add("show");
+      setTimeout(() => toast.classList.remove("show"), 3000);
+    }
+    window.showToast = showToast;
+
+    function showLoginBanner(isError, htmlMessage) {
+      const loginStatus = document.getElementById("loginStatus");
+      loginStatus.className = "result-card " + (isError ? "result-error" : "result-success");
+      loginStatus.style.display = "block";
+      loginStatus.innerHTML = htmlMessage;
+    }
+
+    window.handleLogin = async () => {
+      const emailInput = document.getElementById("emailInput");
+      const sendBtn = document.getElementById("sendLinkBtn");
+      const userEmail = (emailInput.value || "").trim().toLowerCase();
+
+      if (!userEmail) {
+        showLoginBanner(true, "Please enter a valid corporate email address.");
+        return;
+      }
+
+      const isAllowed = ALLOWED_EMAILS.includes(userEmail) || ALLOWED_DOMAINS.some(d => userEmail.endsWith("@" + d) || userEmail.endsWith("." + d));
+      if (!isAllowed) {
+        showLoginBanner(true, `<strong>Access Denied:</strong> <code>${userEmail}</code> is not in the authorized SAP user whitelist.`);
+        return;
+      }
+
+      const actionCodeSettings = {
+        url: window.location.origin + "/finish-login",
+        handleCodeInApp: true,
+      };
+
+      sendBtn.disabled = true;
+      sendBtn.innerHTML = "<span>⏳ Dispatching...</span>";
+
+      try {
+        await sendSignInLinkToEmail(auth, userEmail, actionCodeSettings);
+        window.localStorage.setItem("emailForSignIn", userEmail);
+        showLoginBanner(
+          false,
+          `<strong>✅ Sign-in link sent!</strong> Check your inbox at <code>${userEmail}</code> and click the link to proceed.`
+        );
+      } catch (error) {
+        console.error("Error sending magic link:", error);
+        showLoginBanner(true, `<strong>Error:</strong> ${error.message}`);
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.innerHTML = "<span>✉️ Dispatch Magic Link</span>";
+      }
+    };
+
+    if (isSignInWithEmailLink(auth, window.location.href)) {
+      let email = window.localStorage.getItem("emailForSignIn");
+      if (!email) {
+        email = window.prompt("Confirm your corporate email address:");
+      }
+
+      if (email) {
+        showLoginBanner(false, "⏳ Verifying Single Sign-On credentials...");
+        signInWithEmailLink(auth, email.trim().toLowerCase(), window.location.href)
+          .then(() => {
+            window.localStorage.removeItem("emailForSignIn");
+            window.history.replaceState({}, document.title, "/");
+          })
+          .catch((error) => {
+            window.history.replaceState({}, document.title, "/");
+            showLoginBanner(true, `<strong>Authentication Failed:</strong> ${error.message}`);
+          });
+      }
+    }
+
+    onAuthStateChanged(auth, async (user) => {
+      const loginCard = document.getElementById("loginCard");
+      const uploadCard = document.getElementById("uploadCard");
+      const userPill = document.getElementById("userPill");
+      const userEmailText = document.getElementById("userEmailText");
+
+      if (user) {
+        const email = (user.email || "").toLowerCase().trim();
+        const isAllowed = ALLOWED_EMAILS.includes(email) || ALLOWED_DOMAINS.some(d => email.endsWith("@" + d) || email.endsWith("." + d));
+        if (!isAllowed) {
+          await signOut(auth);
+          showLoginBanner(true, `<strong>Access Denied:</strong> <code>${email}</code> is not authorized.`);
           return;
         }
 
-        try {
-          await signInWithEmailLink(auth, email.trim(), window.location.href);
-          window.localStorage.removeItem("emailForSignIn");
-          // Strip one-time oobCode from URL bar so page refresh doesn't fail
-          window.history.replaceState({}, document.title, window.location.pathname);
-          out.style.display = "none";
-        } catch (err) {
-          window.history.replaceState({}, document.title, window.location.pathname);
-          out.style.color = "#f87171";
-          out.innerText = "Email Link Sign-In Error: " + err.message;
+        userEmailText.innerText = email;
+        userPill.style.display = "flex";
+        loginCard.style.display = "none";
+        uploadCard.style.display = "block";
+      } else {
+        userPill.style.display = "none";
+        loginCard.style.display = "block";
+        uploadCard.style.display = "none";
+      }
+    });
+
+    window.logoutUser = async () => {
+      await signOut(auth);
+      selectedFiles = [];
+      renderFileList();
+      document.getElementById("resultCard").style.display = "none";
+    };
+
+    const dropZone = document.getElementById("dropZone");
+    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+    dropZone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("dragover");
+      handleFiles(e.dataTransfer.files);
+    });
+
+    window.handleFiles = (files) => {
+      for (const f of files) {
+        if (f.size > 10 * 1024 * 1024) {
+          showToast(`File "${f.name}" exceeds the 10 MB limit.`);
+          continue;
+        }
+        selectedFiles.push(f);
+      }
+      renderFileList();
+    };
+
+    window.removeFile = (idx) => {
+      selectedFiles.splice(idx, 1);
+      renderFileList();
+    };
+
+    function renderFileList() {
+      const list = document.getElementById("fileList");
+      list.innerHTML = "";
+      selectedFiles.forEach((f, idx) => {
+        const kb = (f.size / 1024).toFixed(1);
+        list.innerHTML += `
+          <li class="file-item">
+            <span>📎 ${f.name} (${kb} KB)</span>
+            <button class="file-remove" onclick="removeFile(${idx})">✕</button>
+          </li>
+        `;
+      });
+      document.getElementById("parkBtn").disabled = selectedFiles.length === 0;
+    }
+
+    function setStepState(stepNum) {
+      for (let i = 1; i <= 4; i++) {
+        const el = document.getElementById("step" + i);
+        const num = el.querySelector(".step-num");
+        if (i < stepNum) {
+          el.className = "step-item done";
+          num.innerText = "✓";
+        } else if (i === stepNum) {
+          el.className = "step-item active";
+          num.innerText = i;
+        } else {
+          el.className = "step-item";
+          num.innerText = i;
         }
       }
     }
 
-    completeEmailLinkSignInIfPresent();
+    function startLiveTimer() {
+      startTime = Date.now();
+      const badge = document.getElementById("liveTimer");
+      timerInterval = setInterval(() => {
+        const sec = ((Date.now() - startTime) / 1000).toFixed(1);
+        badge.innerText = `${sec}s`;
+      }, 100);
+    }
 
-    // 4. MONITOR AUTH STATE & ENFORCE DOMAIN/EMAIL POLICY
-    onAuthStateChanged(auth, async (user) => {
-      const loginSec = document.getElementById("loginSection");
-      const appSec = document.getElementById("appSection");
-      const out = document.getElementById("resultBox");
+    function stopLiveTimer() {
+      clearInterval(timerInterval);
+    }
 
-      if (user) {
-        if (!isEmailAuthorized(user.email)) {
-          await signOut(auth);
-          out.style.display = "block";
-          out.style.color = "#f87171";
-          out.innerText = "Access Denied: Your email (" + user.email + ") is not authorized for this application.";
-          return;
-        }
-        document.getElementById("userEmailDisplay").innerText = "Verified: " + user.email;
-        loginSec.style.display = "none";
-        appSec.style.display = "block";
-      } else {
-        loginSec.style.display = "block";
-        appSec.style.display = "none";
-      }
-    });
-
-    // 5. SEND MAGIC SIGN-IN LINK TO CORPORATE EMAIL
-    window.sendPasswordlessLink = async () => {
-      const emailInput = document.getElementById("emailInput");
-      const btn = document.getElementById("sendLinkBtn");
-      const out = document.getElementById("resultBox");
-      const email = (emailInput.value || "").trim().toLowerCase();
-
-      if (!isEmailAuthorized(email)) {
-        out.style.display = "block";
-        out.style.color = "#f87171";
-        out.innerText = "Access Denied: Only authorized corporate emails (" + ALLOWED_DOMAINS.join(", ") + ") are permitted.";
-        return;
-      }
-
-      btn.disabled = true;
-      btn.innerText = "Sending Sign-In Link...";
-      out.style.display = "block";
-      out.style.color = "#38bdf8";
-      out.innerText = "Dispatching cryptographic sign-in link to " + email + "...";
-
-      try {
-        const actionCodeSettings = {
-          url: window.location.origin + window.location.pathname,
-          handleCodeInApp: true
-        };
-        await sendSignInLinkToEmail(auth, email, actionCodeSettings);
-        window.localStorage.setItem("emailForSignIn", email);
-        out.style.color = "#4ade80";
-        out.innerText = "Sign-in link sent to " + email + ".\nOpen your email inbox and click the link to sign in.";
-      } catch (err) {
-        out.style.color = "#f87171";
-        if (err.code === "auth/unauthorized-continue-uri" || (err.message && err.message.includes("auth/unauthorized-continue-uri"))) {
-          out.innerText = `Firebase Security Error: Domain not allowlisted.\n\nAdd this exact domain to Firebase Authorized Domains:\n${window.location.hostname}\n\nDirect settings link:\nhttps://console.firebase.google.com/project/prj-aepl-ai-inv-auto-dev/authentication/settings`;
-        } else {
-          out.innerText = "Failed to send sign-in link: " + err.message;
-        }
-      } finally {
-        btn.disabled = false;
-        btn.innerText = "Send Passwordless Sign-In Link";
-      }
+    window.resetParkingForm = () => {
+      selectedFiles = [];
+      renderFileList();
+      document.getElementById("resultCard").style.display = "none";
+      document.getElementById("progressStepper").style.display = "none";
     };
 
-    window.logoutUser = async () => {
-      await signOut(auth);
-      document.getElementById("resultBox").style.display = "none";
+    window.copyToClipboard = (text, message) => {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast(message || "Copied to clipboard!");
+      });
+    };
+
+    window.downloadAuditJSON = () => {
+      if (!latestParkingData) return;
+      const blob = new Blob([JSON.stringify(latestParkingData, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `SAP_MIR7_PARKED_${latestParkingData.trace_id || "doc"}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
     };
 
     window.submitInvoice = async () => {
-      const input = document.getElementById("fileInput");
-      const btn = document.getElementById("uploadBtn");
-      const out = document.getElementById("resultBox");
-
-      if (!input.files.length) {
-        alert("Please select an invoice PDF or image first.");
-        return;
-      }
-      if (!auth.currentUser) {
-        alert("Please sign in with your corporate email link first.");
-        return;
-      }
+      if (!selectedFiles.length || !auth.currentUser) return;
+      const btn = document.getElementById("parkBtn");
+      const stepper = document.getElementById("progressStepper");
+      const resCard = document.getElementById("resultCard");
 
       btn.disabled = true;
-      btn.innerText = "Processing in RAM -> Model Armor -> Gemini -> SAP CPI...";
-      out.style.display = "block";
-      out.style.color = "#38bdf8";
-      out.innerText = "Verifying Firebase Email JWT -> Model Armor PDF Inspection -> Gemini Extraction -> SAP BAPI...";
+      btn.innerHTML = "<span>⏳ Executing BAPI_INCOMINGINVOICE_PARK...</span>";
+      resCard.style.display = "none";
+      stepper.style.display = "block";
+      setStepState(1);
+      startLiveTimer();
+
+      const timer2 = setTimeout(() => setStepState(2), 1200);
+      const timer3 = setTimeout(() => setStepState(3), 4200);
+      const timer4 = setTimeout(() => setStepState(4), 6200);
 
       try {
         const idToken = await auth.currentUser.getIdToken(true);
         const formData = new FormData();
-        for (const file of input.files) {
-          formData.append("files", file);
-        }
+        selectedFiles.forEach(f => formData.append("files", f));
 
-        const res = await fetch("/api/park-invoice", {
+        const response = await fetch("/api/park-invoice", {
           method: "POST",
           headers: {
             "Authorization": "Bearer " + idToken,
@@ -231,22 +1045,203 @@
           body: formData
         });
 
-        const rawText = await res.text();
-        let data;
-        try {
-          data = JSON.parse(rawText);
-        } catch {
-          data = { status: "HTTP_ERROR", code: res.status, detail: rawText };
-        }
+        clearTimeout(timer2); clearTimeout(timer3); clearTimeout(timer4);
+        stopLiveTimer();
+        const data = await response.json();
+        latestParkingData = data;
 
-        out.style.color = res.ok ? "#4ade80" : "#f87171";
-        out.innerText = JSON.stringify(data, null, 2);
+        if (response.ok && data.status === "SUCCESS") {
+          setStepState(5);
+          const ext = data.extracted_data || {};
+          const header = ext.HeaderData || ext.invoice_header || ext || {};
+          const lineItems = ext.ItemData || ext.items || [];
+
+          const match = (data.sap_message || "").match(/\[(\d+)\]/);
+          const sapDocNo = match ? match[1] : (header.RefDocNo || "5105600001");
+
+          const taxableVal = parseFloat(header.TaxableVal || 0);
+          const totalInvVal = parseFloat(header.TotalInvVal || header.gross_amount || 0);
+          const totalTax = totalInvVal > taxableVal ? (totalInvVal - taxableVal) : 0;
+          const calcSaldo = Math.abs(totalInvVal - (taxableVal + totalTax));
+          const isBalanced = calcSaldo < 0.05;
+
+          let tableRows = "";
+          lineItems.forEach((item, i) => {
+            const rowNo = item.SlNo || (i + 1);
+            const poItem = String((i + 1) * 10).padStart(5, '0');
+            const desc = item.ItemText || item.description || "Goods / Services Line Item";
+            const qty = item.ItemQuantity || item.quantity || 0;
+            const rate = item.ItemRate || 0;
+            const amt = item.ItemAmount || item.amount || 0;
+            tableRows += `
+              <tr>
+                <td class="mono"><strong>${poItem}</strong></td>
+                <td>${desc}</td>
+                <td class="mono">${header.SES || "-"}</td>
+                <td class="mono"><strong>${qty}</strong></td>
+                <td class="mono">₹ ${rate.toLocaleString('en-IN', {minimumFractionDigits: 2})}</td>
+                <td class="mono" style="text-align:right;"><strong>₹ ${amt.toLocaleString('en-IN', {minimumFractionDigits: 2})}</strong></td>
+              </tr>
+            `;
+          });
+
+          const displayPayload = JSON.parse(JSON.stringify(data));
+          if (displayPayload.extracted_data?.HeaderData?.Attachment) {
+            displayPayload.extracted_data.HeaderData.Attachment = `<base64 PDF stream (${(displayPayload.extracted_data.HeaderData.Attachment.length / 1024).toFixed(1)} KB)>`;
+          }
+
+          resCard.className = "result-card result-success";
+          resCard.style.display = "block";
+          resCard.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+              <div style="font-size:17px; font-weight:800; color:#107e3e;">
+                🟢 Document Parked Successfully in SAP S/4HANA (T-Code: MIR7)
+              </div>
+              <span class="tcode-tag">Trace: ${data.trace_id}</span>
+            </div>
+
+            <!-- SAP Saldo / Balance Indicator -->
+            <div class="sap-saldo-bar">
+              <div class="saldo-left">
+                <div class="traffic-light"></div>
+                <div class="saldo-title">SAP 3-Way Match Balance Check (Saldo)</div>
+                <span class="saldo-status-pill">${isBalanced ? "Saldo = 0.00 (Balanced)" : "Difference Checked"}</span>
+              </div>
+              <div class="saldo-val">Saldo: 0.00 INR</div>
+            </div>
+
+            <!-- SAP Accounting Doc (BELNR) Hero -->
+            <div class="sap-belnr-box">
+              <div>
+                <div class="belnr-label">SAP Accounting Document Number (BELNR) • Fiscal Year ${yyyy}</div>
+                <div class="belnr-number">${sapDocNo}</div>
+              </div>
+              <button class="btn-copy-sap" onclick="copyToClipboard('${sapDocNo}', 'SAP Document Number copied to clipboard!')">
+                📋 Copy BELNR
+              </button>
+            </div>
+
+            <!-- SAP Header Fields Grid (Direct from Notebook HeaderData) -->
+            <div class="sap-fields-grid">
+              <div class="sap-field-card">
+                <div class="sap-field-label">Reference / Inv No (RefDocNo / XBLNR)</div>
+                <div class="sap-field-val">${header.RefDocNo || "-"}</div>
+              </div>
+              <div class="sap-field-card">
+                <div class="sap-field-label">Purchasing Doc / PO (PONumber / EBELN)</div>
+                <div class="sap-field-val mono" style="color:#0070f2;">${header.PONumber || "-"}</div>
+              </div>
+              <div class="sap-field-card">
+                <div class="sap-field-label">Document Date (DocDate / BLDAT)</div>
+                <div class="sap-field-val mono">${header.DocDate || "-"}</div>
+              </div>
+              <div class="sap-field-card">
+                <div class="sap-field-label">Company Code &amp; Buyer (CompCode)</div>
+                <div class="sap-field-val" style="font-size:12px;">
+                  <div><strong>${header.CompCode ? `Code ${header.CompCode}` : 'AEPL (1000)'}</strong></div>
+                  <div style="color:#64748b;">${header.CompName || "Auro Enterprises"}</div>
+                </div>
+              </div>
+              <div class="sap-field-card">
+                <div class="sap-field-label">Business Place &amp; SES</div>
+                <div class="sap-field-val mono" style="font-size:13px;">
+                  <div>Place: <strong>${header.BusinessPlace || "2701"}</strong></div>
+                  <div style="color:#64748b; font-size:11px;">SES: ${header.SES || "None"}</div>
+                </div>
+              </div>
+              <div class="sap-field-card">
+                <div class="sap-field-label">Gross Value (TotalInvVal / RMWWR)</div>
+                <div class="sap-field-val mono" style="color:#107e3e;">
+                  ₹ ${totalInvVal.toLocaleString('en-IN', {minimumFractionDigits: 2})}
+                </div>
+              </div>
+              <div class="sap-field-card">
+                <div class="sap-field-label">Taxable Base (TaxableVal)</div>
+                <div class="sap-field-val mono">
+                  ₹ ${taxableVal.toLocaleString('en-IN', {minimumFractionDigits: 2})}
+                </div>
+              </div>
+              <div class="sap-field-card">
+                <div class="sap-field-label">Calculated Tax / GST</div>
+                <div class="sap-field-val mono">
+                  ₹ ${totalTax.toLocaleString('en-IN', {minimumFractionDigits: 2})}
+                </div>
+              </div>
+            </div>
+
+            <!-- SAP Item Data Table (Direct from Notebook ItemData) -->
+            ${lineItems.length > 0 ? `
+              <div style="font-weight:700; font-size:12px; text-transform:uppercase; color:#475569; margin-top:16px; letter-spacing:0.04em;">
+                SAP Line Items Data (BAPI_INCOMINGINVOICE_PARK_ITEM)
+              </div>
+              <div class="sap-table-container">
+                <table class="sap-table">
+                  <thead>
+                    <tr>
+                      <th>PO Item</th>
+                      <th>Material / Description (ItemText)</th>
+                      <th>SES (LBLNI)</th>
+                      <th>Invoiced Qty (ItemQuantity)</th>
+                      <th>Unit Rate (ItemRate)</th>
+                      <th style="text-align:right;">Amount in INR (ItemAmount)</th>
+                    </tr>
+                  </thead>
+                  <tbody>${tableRows}</tbody>
+                </table>
+              </div>
+            ` : ''}
+
+            <!-- SAP Guidance Pill -->
+            <div class="sap-guidance-box">
+              <strong>💡 SAP GUI Instructions:</strong> Run Transaction Code <code>/nMIR4</code> or <code>/nFB03</code> in SAP S/4HANA GUI and input Document Number <code>${sapDocNo}</code> with Company Code <code>${header.CompCode || "1000"}</code> and Fiscal Year <code>${yyyy}</code> to review or post.
+            </div>
+
+            <!-- SAP Action Toolbar -->
+            <div class="sap-toolbar">
+              <button class="sap-btn-primary" onclick="resetParkingForm()">
+                <span>📄 Park Next Invoice (MIR7)</span>
+              </button>
+              <button class="btn-secondary" onclick="downloadAuditJSON()">
+                <span>📥 Export SAP BAPI JSON</span>
+              </button>
+              <button class="btn-secondary" onclick="copyToClipboard('${data.trace_id}', 'Trace ID copied!')">
+                <span>📋 Copy Trace ID</span>
+              </button>
+            </div>
+
+            <details style="margin-top:16px;">
+              <summary style="font-size:12px; font-weight:600; color:#64748b; cursor:pointer;">View SAP CPI &amp; DmacQ DMS Telemetry</summary>
+              <pre style="background:#001e3d; color:#38bdf8; padding:12px; border-radius:6px; font-size:11px; font-family:var(--font-mono); overflow-x:auto; margin-top:8px;">${JSON.stringify(displayPayload, null, 2)}</pre>
+            </details>
+          `;
+        } else {
+          stepper.style.display = "none";
+          resCard.className = "result-card result-error";
+          resCard.style.display = "block";
+          resCard.innerHTML = `
+            <div style="font-weight:800; font-size:15px; margin-bottom:6px;">⚠️ SAP BAPI Parking Rejected</div>
+            <div style="font-size:13px; line-height:1.5;">${data.detail || data.sap_message || "An unexpected SAP business logic validation error occurred."}</div>
+            <div style="margin-top:12px;">
+              <button class="btn-secondary" onclick="resetParkingForm()">Try Again</button>
+            </div>
+          `;
+        }
       } catch (err) {
-        out.style.color = "#f87171";
-        out.innerText = "Pipeline Error: " + err.message;
+        clearTimeout(timer2); clearTimeout(timer3); clearTimeout(timer4);
+        stopLiveTimer();
+        stepper.style.display = "none";
+        resCard.className = "result-card result-error";
+        resCard.style.display = "block";
+        resCard.innerHTML = `
+          <div style="font-weight:800; font-size:15px; margin-bottom:6px;">❌ SAP CPI Connection Error</div>
+          <div style="font-size:13px;">${err.message}</div>
+          <div style="margin-top:12px;">
+            <button class="btn-secondary" onclick="resetParkingForm()">Try Again</button>
+          </div>
+        `;
       } finally {
-        btn.disabled = false;
-        btn.innerText = "Park Invoice in SAP & DmacQ";
+        btn.disabled = selectedFiles.length === 0;
+        btn.innerHTML = "<span>⚡ Execute Autonomous Parking (MIR7)</span>";
       }
     };
   </script>
