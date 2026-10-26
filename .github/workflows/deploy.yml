@@ -18,7 +18,7 @@ jobs:
       - name: Authenticate to Google Cloud via Keyless WIF
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: 'projects/411369932113/locations/global/workloadIdentityPools/wif-aepl-github-pool/providers/wif-github-provider'
+          workload_identity_provider: 'projects/411369932113/locations/global/workloadIdentityPools/wif-aepl-github-pool-v2/providers/wif-github-provider-v2'
           service_account: 'sa-github-deployer@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com'
 
       - name: Set up Google Cloud SDK
@@ -30,13 +30,11 @@ jobs:
         run: |
           gcloud run deploy sap-invoice-engine \
             --source . \
-            --region=asia-south1 \
+            --region=us-central1 \
             --service-account="sa-invoice-brain@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
             --build-service-account="projects/prj-aepl-ai-inv-auto-dev/serviceAccounts/sa-cicd-builder@prj-aepl-ai-inv-auto-dev.iam.gserviceaccount.com" \
-            --network=vpc-aepl-inv-sec \
-            --subnet=sub-aepl-mumbai \
-            --vpc-egress=all-traffic \
             --ingress=all \
+            --clear-network \
             --no-invoker-iam-check \
             --timeout=300 \
             --cpu-throttling \
@@ -46,5 +44,5 @@ jobs:
             --min-instances=0 \
             --max-instances=4 \
             --labels="company=aepl,env=dev,project=prj-aepl-ai-inv-auto-dev,cost-center=ap-automation" \
-            --set-env-vars="GCP_PROJECT=prj-aepl-ai-inv-auto-dev,GCP_LOCATION=us-central1,ALLOWED_EMAIL_DOMAINS=ent.aurogroup.com;aurogroup.com;axisclinicals.com,ALLOWED_EMAILS=aic1176@aurogroup.com;hasith.g@aurogroup.com;mohithsai.g@axisclinicals.com;abigna.k@aurogroup.com,GEMINI_MODEL=gemini-3.8-flash" \
+            --set-env-vars="GCP_PROJECT=prj-aepl-ai-inv-auto-dev,GCP_LOCATION=global,RUN_REGION=us-central1,ALLOWED_EMAIL_DOMAINS=ent.aurogroup.com;aurogroup.com;axisclinicals.com,ALLOWED_EMAILS=aic1176@aurogroup.com;hasith.g@aurogroup.com;mohithsai.g@axisclinicals.com;abigna.k@aurogroup.com,GEMINI_MODEL=gemini-3.8-flash,MODEL_ARMOR_LOCATION=us-central1,MODEL_ARMOR_TEMPLATE=tpl-aepl-inv-armor" \
             --set-secrets="SAP_TOKEN_URL=SAP_TOKEN_URL:1,SAP_CLIENT_ID=SAP_CLIENT_ID:1,SAP_CLIENT_SECRET=SAP_CLIENT_SECRET:1,SAP_CPI_URI=SAP_CPI_URI:1"
