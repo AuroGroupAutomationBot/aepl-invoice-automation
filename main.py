@@ -52,7 +52,7 @@ from google.genai import types
 
 PROJECT_ID = os.environ.get("GCP_PROJECT", "prj-aepl-ai-inv-auto-dev")
 
-LOCATION = os.environ.get("GCP_LOCATION", "us-central1")
+LOCATION = os.environ.get("GCP_LOCATION", "global")
 
 RAW_ALLOWED_DOMAINS = os.environ.get("ALLOWED_EMAIL_DOMAINS", os.environ.get("ALLOWED_EMAIL_DOMAIN", "ent.aurogroup.com;aurogroup.com"))
 
@@ -69,6 +69,9 @@ os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
 os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID
 
 os.environ["GOOGLE_CLOUD_LOCATION"] = LOCATION
+
+MODEL_ARMOR_LOCATION = os.environ.get("MODEL_ARMOR_LOCATION", "us-central1")
+MODEL_ARMOR_TEMPLATE = os.environ.get("MODEL_ARMOR_TEMPLATE", os.environ.get("MODEL_ARMOR_TEMPLATE_ID", "tpl-aepl-inv-armor"))
 
 # Safe Firebase Initialization
 
@@ -121,6 +124,67 @@ class StructuredLogger:
 logger = StructuredLogger()
 
 session_service = InMemorySessionService()
+
+# ---------------------------------------------------------
+# GOOGLE CLOUD MODEL ARMOR CLIENT & SANITIZATION PIPELINE
+# ---------------------------------------------------------
+def sanitize_prompt_with_armor(trace_id: str, prompt_text: str) -> bool:
+    """Sanitizes user prompt via Google Cloud Model Armor if configured."""
+    if not MODEL_ARMOR_TEMPLATE or not prompt_text:
+        return True
+    try:
+        from google.cloud import modelarmor_v1
+        from google.api_core.client_options import ClientOptions
+        
+        client = modelarmor_v1.ModelArmorClient(
+            transport="rest",
+            client_options=ClientOptions(
+                api_endpoint=f"modelarmor.{MODEL_ARMOR_LOCATION}.rep.googleapis.com"
+            )
+        )
+        template_name = f"projects/{PROJECT_ID}/locations/{MODEL_ARMOR_LOCATION}/templates/{MODEL_ARMOR_TEMPLATE}"
+        req = modelarmor_v1.SanitizeUserPromptRequest(
+            name=template_name,
+            user_prompt_data=modelarmor_v1.DataItem(text=prompt_text)
+        )
+        resp = client.sanitize_user_prompt(request=req)
+        if resp.sanitization_result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND:
+            logger.log("CRITICAL", trace_id, "MODEL_ARMOR_PROMPT_MATCH", "Model Armor flagged input prompt.")
+            return False
+        logger.log("INFO", trace_id, "MODEL_ARMOR_PROMPT_PASS", "Prompt passed Model Armor sanitization.")
+        return True
+    except Exception as ma_err:
+        logger.log("WARNING", trace_id, "MODEL_ARMOR_PROMPT_BYPASS", f"Model Armor check bypassed: {str(ma_err)}")
+        return True
+
+def sanitize_response_with_armor(trace_id: str, response_text: str) -> bool:
+    """Sanitizes model response via Google Cloud Model Armor if configured."""
+    if not MODEL_ARMOR_TEMPLATE or not response_text:
+        return True
+    try:
+        from google.cloud import modelarmor_v1
+        from google.api_core.client_options import ClientOptions
+        
+        client = modelarmor_v1.ModelArmorClient(
+            transport="rest",
+            client_options=ClientOptions(
+                api_endpoint=f"modelarmor.{MODEL_ARMOR_LOCATION}.rep.googleapis.com"
+            )
+        )
+        template_name = f"projects/{PROJECT_ID}/locations/{MODEL_ARMOR_LOCATION}/templates/{MODEL_ARMOR_TEMPLATE}"
+        req = modelarmor_v1.SanitizeModelResponseRequest(
+            name=template_name,
+            model_response_data=modelarmor_v1.DataItem(text=response_text)
+        )
+        resp = client.sanitize_model_response(request=req)
+        if resp.sanitization_result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND:
+            logger.log("CRITICAL", trace_id, "MODEL_ARMOR_RESPONSE_MATCH", "Model Armor flagged model response.")
+            return False
+        logger.log("INFO", trace_id, "MODEL_ARMOR_RESPONSE_PASS", "Response passed Model Armor sanitization.")
+        return True
+    except Exception as ma_err:
+        logger.log("WARNING", trace_id, "MODEL_ARMOR_RESPONSE_BYPASS", f"Model Armor check bypassed: {str(ma_err)}")
+        return True
  
 # ---------------------------------------------------------
 
@@ -767,11 +831,17 @@ async def park_invoice_ephemeral(
  
         prompt_parts, base64_attachment, pdf_size_mb = process_files_in_ram(raw_files)
 
-        prompt_parts.append(types.Part.from_text(text="Extract all data spanning across these pages into a single JSON matching the schema."))
+        extraction_prompt = "Extract all data spanning across these pages into a single JSON matching the schema."
+        if not sanitize_prompt_with_armor(trace_id, extraction_prompt):
+            raise HTTPException(status_code=403, detail="Processing blocked: Prompt violated Google Cloud Model Armor security policy.")
+        prompt_parts.append(types.Part.from_text(text=extraction_prompt))
  
         tokens = {"input": 0, "output": 0, "cached": 0}
 
         extracted_json = await call_adk_agent(trace_id=trace_id, prompt_parts=prompt_parts, tokens=tokens)
+
+        if not sanitize_response_with_armor(trace_id, extracted_json):
+            raise HTTPException(status_code=403, detail="Processing blocked: Extracted invoice data violated Google Cloud Model Armor security policy.")
 
         logger.log("INFO", trace_id, "EXTRACTION", "ADK Agent Extraction & Vertex AI Protection Complete", meta=tokens)
  
