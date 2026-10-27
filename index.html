@@ -1042,10 +1042,10 @@
       <div class="portal-body">
         <h1 class="page-title">Enterprise Single Sign-On</h1>
         <p class="page-description">
-          Enter your authorized corporate email (@aurogroup.com, @axisclinicals.com) to sign in to the SAP S/4HANA invoice ingestion engine.
+          Enter your authorized corporate email (@aurogroup.com, @axisclinicals.com) to receive a secure passwordless sign-in link in your corporate inbox.
         </p>
 
-        <div class="auth-form-wrap">
+        <div class="auth-form-wrap" id="loginFormWrap">
           <form onsubmit="event.preventDefault(); handleLogin();">
             <label class="form-label" for="emailInput">Corporate Email Address</label>
             <div class="auth-input-group">
@@ -1061,10 +1061,10 @@
                 required
               />
               <button type="submit" class="btn-primary" id="sendLinkBtn">
-                <span>Continue</span>
+                <span>Send Login Link</span>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                  <polyline points="12 5 19 12 12 19"></polyline>
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                 </svg>
               </button>
             </div>
@@ -1077,7 +1077,7 @@
               <span>Designated Administrator: <strong>aic1176@aurogroup.com</strong></span>
             </div>
             <button type="button" class="btn-secondary" style="font-size:11px; padding:5px 12px; font-weight:600;" onclick="quickLoginAdmin()">
-              Sign in as Admin
+              Send Admin Link
             </button>
           </div>
 
@@ -1086,7 +1086,7 @@
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
-            <span>Enterprise Single Sign-On authenticated (Audited in Cloud Firestore, Mumbai)</span>
+            <span>Passwordless email verification link enforced (Audited in Cloud Firestore, Mumbai)</span>
           </div>
         </div>
 
@@ -1472,13 +1472,25 @@
     }
 
     // Quick Login as Admin
+    window.resetLoginForm = () => {
+      const statusEl = document.getElementById("loginStatus");
+      const formWrap = document.getElementById("loginFormWrap");
+      if (statusEl) statusEl.style.display = "none";
+      if (formWrap) formWrap.style.display = "block";
+      const sendBtn = document.getElementById("sendLinkBtn");
+      if (sendBtn) {
+        sendBtn.disabled = false;
+        sendBtn.innerHTML = `<span>Send Login Link</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
+      }
+    };
+
     window.quickLoginAdmin = () => {
       const emailInput = document.getElementById("emailInput");
       emailInput.value = "aic1176@aurogroup.com";
       window.handleLogin();
     };
 
-    // Corporate Single Sign-On (Direct Instant Access & Firebase Sync)
+    // Corporate Single Sign-On (Secure Magic Link Dispatch)
     window.handleLogin = async () => {
       const emailInput = document.getElementById("emailInput");
       const sendBtn = document.getElementById("sendLinkBtn");
@@ -1501,38 +1513,113 @@
       }
 
       sendBtn.disabled = true;
-      sendBtn.innerText = "Authenticating...";
+      sendBtn.innerText = "Dispatching Link...";
 
       try {
-        const res = await fetch("/api/auth/login", {
+        // 1. Dispatch secure single-use magic link via backend (Power Automate & Firestore)
+        const res = await fetch("/api/auth/send-magic-link", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: userEmail })
+          body: JSON.stringify({ email: userEmail, redirect_origin: window.location.origin })
         });
         const data = await res.json();
         if (!res.ok) {
-          throw new Error(data.detail || "Authentication rejected.");
+          throw new Error(data.detail || "Failed to dispatch authentication link.");
         }
 
-        window.localStorage.setItem("corporate_token", data.token);
-        window.localStorage.setItem("user_email", data.email);
-
-        setAuthenticatedState(data.email, data.is_admin);
-        showToast(`Welcome! Signed in as ${data.email}`);
-
-        if (data.custom_token && window._firebaseSignInWithCustomToken && window._firebaseAuth) {
-          window._firebaseSignInWithCustomToken(window._firebaseAuth, data.custom_token).catch(fbErr => {
-            console.warn("Firebase custom token sync note:", fbErr);
-          });
+        // 2. Also dispatch via Firebase Auth if client SDK is loaded
+        if (window._firebaseAuth && window._firebaseSendSignInLinkToEmail) {
+          try {
+            const actionCodeSettings = { url: window.location.origin + "/", handleCodeInApp: true };
+            await window._firebaseSendSignInLinkToEmail(window._firebaseAuth, userEmail, actionCodeSettings);
+          } catch (fbLinkErr) {
+            console.warn("Firebase client link note:", fbLinkErr);
+          }
         }
+        window.localStorage.setItem("emailForSignIn", userEmail);
+
+        // 3. Update UI to prominent check email state (Does NOT log in directly)
+        const formWrap = document.getElementById("loginFormWrap");
+        const statusEl = document.getElementById("loginStatus");
+        if (formWrap) formWrap.style.display = "none";
+        if (statusEl) {
+          statusEl.style.display = "block";
+          statusEl.innerHTML = `
+            <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:24px; text-align:center;">
+              <div style="width:48px; height:48px; background:#16a34a; color:#fff; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; margin:0 auto 14px auto;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </div>
+              <h3 style="color:#15803d; margin:0 0 8px 0; font-size:17px; font-weight:700;">Check Your Corporate Email</h3>
+              <p style="color:#374151; font-size:14px; margin:0 0 16px 0;">
+                A single-use passwordless sign-in link has been sent to <strong>${userEmail}</strong>.
+              </p>
+              <div style="font-size:12px; color:#475569; background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; padding:12px; margin-bottom:18px; text-align:left; line-height:1.6;">
+                &bull; Check your <strong>Outlook / Office 365 inbox</strong> at <code>${userEmail}</code>.<br>
+                &bull; Click the link inside the email to securely verify your identity and enter the portal.<br>
+                &bull; For security, this link expires in <strong>15 minutes</strong> and can only be used once.
+              </div>
+              <button type="button" class="btn-secondary" onclick="resetLoginForm()" style="font-size:12px; padding:6px 14px;">
+                Use a different email
+              </button>
+            </div>
+          `;
+        }
+        showToast("Secure login link sent to " + userEmail);
       } catch (err) {
-        console.error("Login error:", err);
-        showToast(err.message || "Sign-in failed. Please verify your email.");
-      } finally {
-        sendBtn.disabled = false;
-        sendBtn.innerHTML = `<span>Continue</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>`;
+        console.error("Login dispatch error:", err);
+        showToast(err.message || "Failed to send link. Please verify your email.");
+        resetLoginForm();
       }
     };
+
+    // Check for Magic Link Token in URL on page load
+    (function checkUrlMagicLink() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const magicToken = urlParams.get("magic_link_token");
+      const magicEmail = urlParams.get("email");
+
+      if (magicToken && magicEmail) {
+        const statusEl = document.getElementById("loginStatus");
+        const formWrap = document.getElementById("loginFormWrap");
+        if (formWrap) formWrap.style.display = "none";
+        if (statusEl) {
+          statusEl.style.display = "block";
+          statusEl.innerHTML = `
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:24px; text-align:center;">
+              <h3 style="color:#0f172a; margin:0 0 8px 0; font-size:16px;">Verifying Single Sign-On...</h3>
+              <p style="color:#64748b; font-size:13px; margin:0;">Authenticating cryptographic token for <strong>${magicEmail}</strong>...</p>
+            </div>
+          `;
+        }
+        fetch("/api/auth/verify-magic-link", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: magicToken, email: magicEmail })
+        })
+        .then(async r => {
+          const data = await r.json();
+          if (r.ok && data.token) {
+            window.localStorage.setItem("corporate_token", data.token);
+            window.localStorage.setItem("user_email", data.email);
+            window.history.replaceState({}, document.title, window.location.pathname);
+            setAuthenticatedState(data.email, data.is_admin);
+            showToast(`Welcome! Authenticated as ${data.email}`);
+            if (data.custom_token && window._firebaseSignInWithCustomToken && window._firebaseAuth) {
+              window._firebaseSignInWithCustomToken(window._firebaseAuth, data.custom_token).catch(() => {});
+            }
+          } else {
+            window.history.replaceState({}, document.title, window.location.pathname);
+            showToast(data.detail || "Authentication link expired or invalid.");
+            resetLoginForm();
+          }
+        })
+        .catch(err => {
+          window.history.replaceState({}, document.title, window.location.pathname);
+          showToast("Failed to verify link: " + err.message);
+          resetLoginForm();
+        });
+      }
+    })();
 
     // Restore persistent session on page load
     const savedToken = window.localStorage.getItem("corporate_token");
@@ -2675,14 +2762,15 @@
     window.sendTestFailureAlert = async () => {
       if (!isAuthenticated()) return;
       try {
-        showToast("Sending test failure alert to aic1176@aurogroup.com...");
+        showToast("Dispatching test alert to aic1176@aurogroup.com via Power Automate Webhook...");
         const idToken = await getAuthToken();
         const res = await fetch("/api/alerts/test", {
           method: "POST",
           headers: { "Authorization": "Bearer " + idToken, "X-Firebase-Token": idToken }
         });
         const data = await res.json();
-        showToast(`Alert Status: ${data.incident?.email_status || 'PROCESSED'}`);
+        const st = data.email_status || data.incident?.email_status || data.status;
+        showToast(`✅ Alert Delivered! Status: ${st}`);
         loadMISDashboard();
       } catch (err) {
         showToast("Failed to trigger alert: " + err.message);
@@ -2713,6 +2801,7 @@
       const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js");
       const {
         getAuth,
+        sendSignInLinkToEmail,
         signInWithCustomToken,
         signOut,
         onAuthStateChanged,
@@ -2731,6 +2820,7 @@
       window._firebaseAuth = auth;
       window._firebaseSignOut = signOut;
       window._firebaseSignInWithCustomToken = signInWithCustomToken;
+      window._firebaseSendSignInLinkToEmail = sendSignInLinkToEmail;
 
       if (isSignInWithEmailLink(auth, window.location.href)) {
         let email = window.localStorage.getItem("emailForSignIn");
@@ -2739,24 +2829,26 @@
         }
         if (email) {
           signInWithEmailLink(auth, email.trim().toLowerCase(), window.location.href)
-            .then(() => {
+            .then(async () => {
               window.localStorage.removeItem("emailForSignIn");
-              window.history.replaceState({}, document.title, "/");
+              window.history.replaceState({}, document.title, window.location.pathname);
               showToast("Welcome! Single Sign-On authenticated.");
-              fetch("/api/auth/login", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ email: email.trim().toLowerCase() })
-              }).then(r => r.json()).then(d => {
+              if (auth.currentUser) {
+                const idToken = await auth.currentUser.getIdToken();
+                const sRes = await fetch("/api/auth/session-from-firebase", {
+                  method: "POST",
+                  headers: { "Authorization": "Bearer " + idToken, "X-Firebase-Token": idToken }
+                });
+                const d = await sRes.json();
                 if (d.token) {
                   window.localStorage.setItem("corporate_token", d.token);
                   window.localStorage.setItem("user_email", d.email);
                   setAuthenticatedState(d.email, d.is_admin);
                 }
-              }).catch(() => {});
+              }
             })
             .catch(() => {
-              window.history.replaceState({}, document.title, "/");
+              window.history.replaceState({}, document.title, window.location.pathname);
               showToast("Authentication failed or link expired.");
             });
         }

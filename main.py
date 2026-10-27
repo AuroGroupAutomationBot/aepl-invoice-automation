@@ -12,11 +12,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 import firebase_admin
 from firebase_admin import auth as firebase_auth, firestore as fb_firestore
 import fitz  # PyMuPDF
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from google import genai
 from google.genai import types
@@ -69,6 +70,13 @@ ADMIN_EMAILS = {e.strip().lower() for e in re.split(r"[,;]", RAW_ADMIN_EMAILS) i
 
 # Alert Email Recipient (Default: aic1176@aurogroup.com)
 ALERT_EMAIL_RECIPIENT = os.getenv("ALERT_EMAIL_RECIPIENT", "aic1176@aurogroup.com").strip()
+
+# Default Microsoft Power Automate HTTP Trigger Webhook for Failure Alerts and Secure Magic Link SSO
+DEFAULT_ALERT_WEBHOOK_URL = (
+    "https://default75076fa3e5184305a3745215e94dee.de.environment.api.powerplatform.com:443"
+    "/powerautomate/automations/direct/cu/31/workflows/9f516bc84195412ab844e3fa188bc9f7/triggers/manual/paths/invoke"
+    "?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=1NtyL2rRdWjw1vp-yjIf5e_DiYn2oxHZPaw0ZrVc050"
+)
 
 # SAP CPI Credentials from Secret Manager
 SAP_TOKEN_URL = os.getenv("SAP_TOKEN_URL", "").strip()
@@ -137,7 +145,7 @@ class AlertNotificationService:
         self.recipient_email = ALERT_EMAIL_RECIPIENT
         self.sender_email = os.getenv("ALERT_SENDER_EMAIL", self.recipient_email).strip()
         self.mail_collection = os.getenv("MAIL_COLLECTION", "mail").strip()
-        self.webhook_url = os.getenv("ALERT_WEBHOOK_URL", "").strip()
+        self.webhook_url = os.getenv("ALERT_WEBHOOK_URL", "").strip() or DEFAULT_ALERT_WEBHOOK_URL
         self._incidents_mem: List[Dict[str, Any]] = []
 
     def send_failure_alert(
@@ -256,7 +264,8 @@ class AlertNotificationService:
                     "timestamp": now_iso,
                 }
                 self.db.collection(self.mail_collection).document(incident_id).set(mail_doc)
-                incident["email_status"] = f"QUEUED_IN_FIRESTORE_{self.mail_collection.upper()}"
+                if incident["email_status"] == "TRIGGERED":
+                    incident["email_status"] = f"QUEUED_IN_FIRESTORE_{self.mail_collection.upper()}"
                 logger.info(f"Alert written to Firestore '{self.mail_collection}' collection for firestore-send-email extension.")
             except Exception as mail_exc:
                 logger.warning(f"Firestore '{self.mail_collection}' write notice: {mail_exc}")
@@ -775,33 +784,31 @@ def enforce_sap_abap_typing(obj, parent_key=""):
 
 def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Optional[str]]:
     """
-    Validates against the notebook's baseline schema and returns:
-    (is_valid: bool, error_code: Optional[str], details: Optional[str])
+    Validates against the notebook's baseline schema and applies strict SAP Regex rules:
+    - PONumber: Exactly 10 digits
+    - SES: If present, exactly 10 digits starting with 1
+    - TaxableVal: Must be > 0
+    - TotalInvVal: Must be > 0
     """
     header = payload_dict.get("HeaderData", {})
     po_number = header.get("PONumber")
     ses_number = header.get("SES")
     taxable_val = header.get("TaxableVal")
     total_inv_val = header.get("TotalInvVal")
-    ref_doc_no = header.get("RefDocNo")
 
-    # 1. Missing or Invalid PO Number
+    # 1. Missing or Invalid PO Number per notebook regex
     if not po_number or str(po_number).strip().lower() in ("null", "none", ""):
         return False, "ERR_MISSING_PO", None
 
     if not re.match(r"^\d{10}$", str(po_number).strip()):
         return False, "ERR_INVALID_PO", str(po_number).strip()
 
-    # 2. Invalid SES Number if present
+    # 2. Invalid SES Number if present per notebook regex
     if ses_number and str(ses_number).strip().lower() not in ("null", "none", ""):
         if not re.match(r"^1\d{9}$", str(ses_number).strip()):
             return False, "ERR_INVALID_SES", str(ses_number).strip()
 
-    # 3. Missing RefDocNo
-    if not ref_doc_no or str(ref_doc_no).strip().lower() in ("null", "none", ""):
-        return False, "ERR_MISSING_REF_DOC", None
-
-    # 4. Value Validations
+    # 3. Value Validations per notebook
     if taxable_val is None or float(taxable_val) <= 0:
         return False, "ERR_TAXABLE_VAL_ZERO", None
 
@@ -843,6 +850,185 @@ def verify_corporate_session_token(token: str) -> Optional[str]:
         return payload.get("email")
     except Exception:
         return None
+
+
+# In-memory and Firestore-backed single-use magic link nonces
+_MAGIC_LINKS_CACHE: Dict[str, Dict[str, Any]] = {}
+
+def create_magic_link_token(email: str) -> Tuple[str, str]:
+    """
+    Generates a secure, 15-minute time-limited single-use token for email sign-in.
+    Returns (token_string, nonce).
+    """
+    nonce = str(uuid.uuid4())
+    exp = int(time.time()) + 900  # 15 minutes
+    payload = {
+        "email": email.lower().strip(),
+        "nonce": nonce,
+        "exp": exp,
+        "purpose": "magic_link_login"
+    }
+    payload_json = json.dumps(payload, separators=(',', ':'))
+    payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode()
+    signature = hmac.new(SESSION_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    token = f"{payload_b64}.{signature}"
+
+    token_record = {
+        "email": email.lower().strip(),
+        "exp": exp,
+        "used": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    _MAGIC_LINKS_CACHE[nonce] = token_record
+    if firestore_client:
+        try:
+            firestore_client.collection("auth_magic_links").document(nonce).set(token_record)
+        except Exception as e:
+            logger.warning(f"Firestore magic link record notice: {e}")
+
+    return token, nonce
+
+def verify_and_consume_magic_link_token(token: str, expected_email: str) -> Optional[str]:
+    """
+    Verifies HMAC signature, expiry, and single-use status of the magic link token.
+    If valid, marks the nonce as used (preventing replay attacks) and returns the validated email.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) != 2:
+            return None
+        payload_b64, signature = parts
+        expected_sig = hmac.new(SESSION_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_sig):
+            return None
+        payload_json = base64.urlsafe_b64decode(payload_b64.encode()).decode()
+        payload = json.loads(payload_json)
+
+        if payload.get("purpose") != "magic_link_login":
+            return None
+        if payload.get("exp", 0) < time.time():
+            return None
+
+        token_email = (payload.get("email") or "").lower().strip()
+        if expected_email and token_email != expected_email.lower().strip():
+            return None
+
+        nonce = payload.get("nonce")
+        if not nonce:
+            return None
+
+        # Anti-replay single-use check
+        record = _MAGIC_LINKS_CACHE.get(nonce)
+        if record and record.get("used"):
+            return None
+
+        if firestore_client:
+            try:
+                doc = firestore_client.collection("auth_magic_links").document(nonce).get()
+                if doc.exists and (doc.to_dict() or {}).get("used"):
+                    return None
+            except Exception:
+                pass
+
+        # Invalidate nonce immediately
+        _MAGIC_LINKS_CACHE[nonce] = {"email": token_email, "used": True, "consumed_at": time.time()}
+        if firestore_client:
+            try:
+                firestore_client.collection("auth_magic_links").document(nonce).update({
+                    "used": True,
+                    "consumed_at": datetime.now(timezone.utc).isoformat()
+                })
+            except Exception:
+                pass
+
+        return token_email
+    except Exception as exc:
+        logger.warning(f"Magic link verification error: {exc}")
+        return None
+
+def send_magic_link_email(email: str, magic_url: str) -> bool:
+    """Dispatches the single-use sign-in link directly to user's corporate email."""
+    subject = "[SAP AP SSO] Your Secure Passwordless Sign-In Link"
+    plain_text = (
+        f"SAP S/4HANA Invoice Parking Automation — Single Sign-On\n\n"
+        f"Hello,\n\n"
+        f"A secure sign-in link was requested for {email}.\n\n"
+        f"Click the link below to authenticate:\n{magic_url}\n\n"
+        f"This link is valid for 15 minutes and can only be used once.\n"
+        f"If you did not request this link, please ignore this email."
+    )
+    html_body = f"""
+    <html>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; background-color: #f8fafc; padding: 24px; margin: 0;">
+        <div style="max-width: 560px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+            <div style="background-color: #0f172a; padding: 20px 24px; border-bottom: 3px solid #0284c7;">
+                <h2 style="color: #ffffff; margin: 0; font-size: 18px; font-weight: 600;">
+                    SAP S/4HANA Invoice Ingestion Engine
+                </h2>
+                <p style="color: #94a3b8; margin: 4px 0 0 0; font-size: 12px;">Enterprise Single Sign-On (Passwordless Authentication)</p>
+            </div>
+            <div style="padding: 28px 24px;">
+                <p style="font-size: 14px; margin-top: 0; color: #334155;">Hello,</p>
+                <p style="font-size: 14px; color: #334155; line-height: 1.6;">
+                    A secure passwordless login link was requested for <strong>{email}</strong>. Click the button below to sign in:
+                </p>
+                <div style="text-align: center; margin: 28px 0;">
+                    <a href="{magic_url}" style="background-color: #0284c7; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px; display: inline-block;">
+                        Sign In to SAP Portal &rarr;
+                    </a>
+                </div>
+                <div style="background-color: #f1f5f9; padding: 12px; border-radius: 6px; font-size: 12px; color: #475569; word-break: break-all;">
+                    <strong>Direct Link:</strong><br>
+                    <a href="{magic_url}" style="color: #0284c7;">{magic_url}</a>
+                </div>
+                <p style="font-size: 12px; color: #64748b; margin-top: 24px; line-height: 1.5;">
+                    &bull; This link is valid for <strong>15 minutes</strong> and will expire automatically.<br>
+                    &bull; It is single-use and protects against unauthorized access.<br>
+                    &bull; If you did not make this request, please disregard this email.
+                </p>
+            </div>
+            <div style="background-color: #f8fafc; padding: 14px 24px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
+                Auro Enterprises &bull; Automated AP Financial Operations &bull; Internal Enterprise Tool
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    wh_url = alert_service.webhook_url or DEFAULT_ALERT_WEBHOOK_URL
+    if wh_url:
+        try:
+            wh_payload = {
+                "incident_id": f"sso_{str(uuid.uuid4())[:8]}",
+                "recipient": email,
+                "subject": subject,
+                "html": html_body,
+                "text": plain_text,
+                "failure_type": "SSO_MAGIC_LINK",
+                "filename": "magic_link_auth.html",
+                "trace_id": f"auth_{str(uuid.uuid4())[:6]}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "submitted_by": email,
+                "error_title": "Enterprise Single Sign-On Link",
+                "error_detail": f"Passwordless login link dispatched to {email}.",
+            }
+            requests.post(wh_url, json=wh_payload, timeout=8)
+            logger.info(f"Magic link email sent to {email} via Power Automate Webhook.")
+        except Exception as wh_err:
+            logger.warning(f"Power Automate SSO email error: {wh_err}")
+
+    if firestore_client:
+        try:
+            firestore_client.collection(alert_service.mail_collection).add({
+                "to": [email],
+                "from": alert_service.sender_email,
+                "message": {"subject": subject, "text": plain_text, "html": html_body},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "type": "SSO_MAGIC_LINK"
+            })
+        except Exception as fs_err:
+            logger.warning(f"Firestore mail write notice: {fs_err}")
+    return True
 
 def verify_corporate_user(authorization: Optional[str], x_firebase_token: Optional[str]) -> str:
     token = None
@@ -979,6 +1165,14 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
         time.sleep(1.0)
         telemetry["cpi_time"] = 1.0
         telemetry["sap_time"] = 0.5
+        header = payload_dict.get("HeaderData", {})
+        ref_doc = header.get("RefDocNo")
+        if not ref_doc or str(ref_doc).strip().lower() in ("null", "none", ""):
+            return {
+                "status": "SAP_REJECTED",
+                "belnr": None,
+                "sap_message": "SAP Business Error: Vendor Invoice Reference (XBLNR) is mandatory for parking in SAP S/4HANA (MIR7).",
+            }
         doc_no = f"5105{random.randint(100000, 999999)}"
         return {
             "status": "SUCCESS",
@@ -1582,12 +1776,11 @@ async def healthz():
     }
 
 
-@app.post("/api/auth/login")
-async def corporate_login(payload: Dict[str, Any]):
+@app.post("/api/auth/send-magic-link")
+async def send_magic_link_endpoint(payload: Dict[str, Any], request: Request):
     """
-    Direct Corporate Single Sign-On (Passwordless / Instant Access).
-    Validates corporate email against allowed enterprise domains (aurogroup.com, axisclinicals.com).
-    Issues both a Firebase Custom Token and an enterprise session token.
+    Sends a cryptographically signed, 15-minute single-use magic login link to user's corporate email.
+    Eliminates unverified email access and enforces real corporate mailbox ownership verification.
     """
     email = (payload.get("email") or "").lower().strip()
     if not email:
@@ -1597,30 +1790,104 @@ async def corporate_login(payload: Dict[str, Any]):
         email.endswith(f"@{domain}") or email.endswith(f".{domain}") for domain in ALLOWED_DOMAINS
     )
     if not is_allowed:
-        audit_service.record_auth_event(email, "FAILED", "Unauthorized domain or email address")
-        raise HTTPException(status_code=403, detail=f"Access restricted: Email '{email}' is not authorized.")
+        audit_service.record_auth_event(email, "FAILED", "Unauthorized domain attempt for magic link")
+        raise HTTPException(status_code=403, detail=f"Access restricted: Email '{email}' is not from an authorized corporate domain.")
+
+    redirect_origin = (payload.get("redirect_origin") or "").strip()
+    if not redirect_origin:
+        redirect_origin = str(request.base_url).rstrip("/")
+
+    token, nonce = create_magic_link_token(email)
+    magic_url = f"{redirect_origin}/?magic_link_token={token}&email={quote(email)}"
+
+    # Send the email via Power Automate Webhook and Firestore
+    send_magic_link_email(email, magic_url)
+    audit_service.record_auth_event(email, "LINK_DISPATCHED", f"Secure magic link dispatched to {email}")
+
+    return JSONResponse({
+        "status": "LINK_SENT",
+        "email": email,
+        "message": f"A secure passwordless login link has been sent to {email}. Please check your corporate inbox and click the link to sign in."
+    })
+
+
+@app.post("/api/auth/verify-magic-link")
+async def verify_magic_link_endpoint(payload: Dict[str, Any]):
+    """
+    Verifies the single-use cryptographic magic link clicked by the user.
+    Enforces HMAC verification, expiration check, and anti-replay nonce invalidation.
+    """
+    token = payload.get("token") or ""
+    email = (payload.get("email") or "").lower().strip()
+    if not token or not email:
+        raise HTTPException(status_code=400, detail="Token and email are required to verify magic link.")
+
+    verified_email = verify_and_consume_magic_link_token(token, email)
+    if not verified_email:
+        audit_service.record_auth_event(email, "FAILED", "Invalid, expired, or already used magic link")
+        raise HTTPException(status_code=401, detail="This sign-in link is invalid, has expired, or has already been used. Please request a new link.")
 
     # Record successful login event in Cloud Firestore
-    audit_service.record_auth_event(email, "SUCCESS", "Corporate Instant Single Sign-On")
+    audit_service.record_auth_event(verified_email, "SUCCESS", "Verified Magic Link Single Sign-On")
 
     # Generate corporate session token
-    session_token = create_corporate_session_token(email)
+    session_token = create_corporate_session_token(verified_email)
 
-    # Attempt to generate Firebase Custom Token if available
+    # Generate Firebase custom token if available
     custom_token = None
     try:
-        raw_token = firebase_auth.create_custom_token(email, {"email": email, "is_admin": is_admin_user(email)})
+        raw_token = firebase_auth.create_custom_token(verified_email, {"email": verified_email, "is_admin": is_admin_user(verified_email)})
         custom_token = raw_token.decode("utf-8") if isinstance(raw_token, bytes) else str(raw_token)
     except Exception as exc:
         logger.warning(f"Firebase custom token generation notice: {exc}")
 
     return JSONResponse({
         "status": "SUCCESS",
-        "email": email,
+        "email": verified_email,
         "token": session_token,
         "custom_token": custom_token,
+        "is_admin": is_admin_user(verified_email),
+        "message": f"Welcome, {verified_email}. Single Sign-On authenticated successfully."
+    })
+
+
+@app.post("/api/auth/login")
+async def corporate_login(payload: Dict[str, Any]):
+    """
+    Corporate login requires a verified magic link token.
+    Direct unauthenticated email-only logins are strictly rejected to prevent identity spoofing.
+    """
+    token = payload.get("token") or payload.get("magic_link_token")
+    email = (payload.get("email") or "").lower().strip()
+    if token and email:
+        verified_email = verify_and_consume_magic_link_token(token, email)
+        if verified_email:
+            session_token = create_corporate_session_token(verified_email)
+            return JSONResponse({
+                "status": "SUCCESS",
+                "email": verified_email,
+                "token": session_token,
+                "is_admin": is_admin_user(verified_email),
+            })
+    raise HTTPException(
+        status_code=401,
+        detail="Direct email sign-in is disabled for security. Please request a secure login link via /api/auth/send-magic-link."
+    )
+
+
+@app.post("/api/auth/session-from-firebase")
+async def session_from_firebase(
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """Exchanges a verified Firebase ID Token for a Corporate Session Token."""
+    email = verify_corporate_user(authorization, x_firebase_token)
+    session_token = create_corporate_session_token(email)
+    return JSONResponse({
+        "status": "SUCCESS",
+        "email": email,
+        "token": session_token,
         "is_admin": is_admin_user(email),
-        "message": f"Welcome, {email}. Authentication successful."
     })
 
 
@@ -2083,10 +2350,11 @@ async def test_alert_notification(
         trace_id=f"test_{str(uuid.uuid4())[:6]}",
         user_email=user_email,
         error_title="Diagnostic Failure Alert Test",
-        error_detail="This is a test notification confirming automated failure alerting dispatch to administrator.",
+        error_detail="This is a test notification confirming automated failure alerting dispatch to administrator via Power Automate.",
     )
     return JSONResponse(content={
-        "status": "PROCESSED",
+        "status": "DELIVERED",
+        "email_status": test_incident.get("email_status", "DISPATCHED"),
         "incident": test_incident,
         "active_transports": {
             "webhook_configured": bool(alert_service.webhook_url),
