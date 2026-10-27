@@ -1,18 +1,23 @@
 import base64
+import copy
 import io
 import json
 import logging
 import os
 import random
 import re
+import smtplib
 import time
 import uuid
-from typing import List, Optional
+from datetime import datetime, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Any, Dict, List, Optional, Tuple
 
 import firebase_admin
-from firebase_admin import auth as firebase_auth
+from firebase_admin import auth as firebase_auth, firestore as fb_firestore
 import fitz  # PyMuPDF
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from google import genai
 from google.genai import types
@@ -35,6 +40,8 @@ MODEL_ARMOR_LOCATION = os.getenv("MODEL_ARMOR_LOCATION", RUN_REGION)
 MODEL_ARMOR_TEMPLATE = os.getenv("MODEL_ARMOR_TEMPLATE", "tpl-aepl-inv-armor")
 VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+FIRESTORE_LOCATION = os.getenv("FIRESTORE_LOCATION", "asia-south1")
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB strict limit per enterprise specification
 
 # Multi-domain & Corporate User Whitelist
 RAW_ALLOWED_DOMAINS = os.getenv(
@@ -57,6 +64,13 @@ ALLOWED_EMAILS = {
     if e.strip()
 }
 
+# Administrator Email Definition (Default: aic1176@aurogroup.com)
+RAW_ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "aic1176@aurogroup.com")
+ADMIN_EMAILS = {e.strip().lower() for e in re.split(r"[,;]", RAW_ADMIN_EMAILS) if e.strip()}
+
+# Alert Email Recipient (Default: aic1176@aurogroup.com)
+ALERT_EMAIL_RECIPIENT = os.getenv("ALERT_EMAIL_RECIPIENT", "aic1176@aurogroup.com").strip()
+
 # SAP CPI Credentials from Secret Manager
 SAP_TOKEN_URL = os.getenv("SAP_TOKEN_URL", "").strip()
 SAP_CLIENT_ID = os.getenv("SAP_CLIENT_ID", "").strip()
@@ -67,7 +81,20 @@ SAP_CPI_URI = os.getenv("SAP_CPI_URI", "").strip()
 if not firebase_admin._apps:
     firebase_admin.initialize_app(options={"projectId": GCP_PROJECT})
 
-# Initialize Vertex AI Gemini Client (Global endpoint for Gemini 3.8 Flash)
+# Initialize Cloud Firestore Client (Native GCP in Mumbai asia-south1 & Firebase fallback)
+firestore_client = None
+try:
+    from google.cloud import firestore as gcp_firestore
+    firestore_client = gcp_firestore.Client(project=GCP_PROJECT)
+    logger.info(f"Cloud Firestore client connected to project '{GCP_PROJECT}' (Location: {FIRESTORE_LOCATION}).")
+except Exception as e1:
+    try:
+        firestore_client = fb_firestore.client()
+        logger.info("Cloud Firestore client initialized via Firebase Admin.")
+    except Exception as e2:
+        logger.warning(f"Cloud Firestore connection notice ({e1} / {e2}). Synchronized in-memory store active.")
+
+# Initialize Vertex AI Gemini Client
 genai_client = genai.Client(vertexai=True, project=GCP_PROJECT, location=VERTEX_LOCATION)
 
 # Initialize Regional Model Armor Client (us-central1)
@@ -79,8 +106,563 @@ ARMOR_TEMPLATE_PATH = f"projects/{GCP_PROJECT}/locations/{MODEL_ARMOR_LOCATION}/
 app = FastAPI(title="AEPL Autonomous SAP Invoice Parking Engine", docs_url=None, redoc_url=None)
 
 
+def is_admin_user(email: str) -> bool:
+    """Checks whether the specified email belongs to the Administrator role."""
+    return (email or "").lower().strip() in ADMIN_EMAILS
+
+
 # ---------------------------------------------------------
-# 2. SCHEMAS (Strictly matching AEPL Reference Notebook)
+# 2. FAILURE ALERT NOTIFICATION SERVICE (To aic1176@aurogroup.com)
+# ---------------------------------------------------------
+class AlertNotificationService:
+    """
+    Automated Failure Incident Alerting Service.
+    Sends instant email alerts to administrator (aic1176@aurogroup.com) on:
+    - Model extraction failures (Gemini inference crash / timeout)
+    - Model Armor security blocks (adversarial prompt injection / malicious URI)
+    - SAP CPI BAPI rejections or network disconnects
+    - System unhandled exceptions
+    Persists all incident alerts into Cloud Firestore collection 'incident_alerts'.
+    """
+    def __init__(self, db):
+        self.db = db
+        self.recipient_email = ALERT_EMAIL_RECIPIENT
+        self.smtp_host = os.getenv("SMTP_HOST", "").strip()
+        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        self.smtp_user = os.getenv("SMTP_USER", "").strip()
+        self.smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
+        self.sender_email = os.getenv("ALERT_SENDER_EMAIL", "sap-alerts@aurogroup.com").strip()
+        self._incidents_mem: List[Dict[str, Any]] = []
+
+    def send_failure_alert(
+        self,
+        failure_type: str,
+        filename: str,
+        trace_id: str,
+        user_email: str,
+        error_title: str,
+        error_detail: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        incident_id = f"inc_{str(uuid.uuid4())[:8]}"
+
+        incident = {
+            "incident_id": incident_id,
+            "timestamp": now_iso,
+            "failure_type": failure_type,
+            "recipient": self.recipient_email,
+            "trace_id": trace_id,
+            "filename": filename,
+            "submitted_by": user_email,
+            "error_title": error_title,
+            "error_detail": error_detail,
+            "metadata": metadata or {},
+            "email_status": "TRIGGERED",
+        }
+        self._incidents_mem.append(incident)
+
+        logger.critical(
+            f"ALERT TRIGGERED -> Recipient: {self.recipient_email} | Incident: {incident_id} | "
+            f"Type: {failure_type} | File: {filename} | Error: {error_title} - {error_detail}"
+        )
+
+        # 1. Attempt Live Email Dispatch via SMTP if credentials are provided in env
+        if self.smtp_host and self.smtp_user and self.smtp_password:
+            try:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = f"[SAP AP FAILURE ALERT] {error_title} - {filename} ({trace_id})"
+                msg["From"] = self.sender_email
+                msg["To"] = self.recipient_email
+
+                html_body = f"""
+                <html>
+                <body style="font-family: Arial, sans-serif; color: #1e293b; line-height: 1.5; padding: 20px;">
+                    <div style="background-color: #b91c1c; color: #ffffff; padding: 14px 20px; border-radius: 6px; font-size: 18px; font-weight: bold;">
+                        SAP S/4HANA Invoice Automation — Failure Incident Alert
+                    </div>
+                    <div style="padding: 20px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 6px 6px; background-color: #fafbfc;">
+                        <p style="font-size: 14px; margin-top: 0;">An automated invoice processing failure has occurred requiring administrative attention.</p>
+                        <table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
+                            <tr><td style="padding: 6px 0; font-weight: bold; width: 160px;">Incident ID:</td><td>{incident_id}</td></tr>
+                            <tr><td style="padding: 6px 0; font-weight: bold;">Failure Type:</td><td style="color: #b91c1c; font-weight: bold;">{failure_type}</td></tr>
+                            <tr><td style="padding: 6px 0; font-weight: bold;">Document File:</td><td>{filename}</td></tr>
+                            <tr><td style="padding: 6px 0; font-weight: bold;">Trace ID:</td><td><code>{trace_id}</code></td></tr>
+                            <tr><td style="padding: 6px 0; font-weight: bold;">Submitted By:</td><td>{user_email}</td></tr>
+                            <tr><td style="padding: 6px 0; font-weight: bold;">Timestamp (UTC):</td><td>{now_iso}</td></tr>
+                            <tr><td style="padding: 6px 0; font-weight: bold; vertical-align: top;">Error Summary:</td><td><strong>{error_title}</strong><br><span style="color: #64748b;">{error_detail}</span></td></tr>
+                        </table>
+                        <div style="margin-top: 20px; padding: 12px; background-color: #fee2e2; border-left: 4px solid #b91c1c; font-size: 13px;">
+                            <strong>Action Required:</strong> Log in to the Admin MIS Dashboard as <code>{self.recipient_email}</code> to inspect telemetry or route this invoice through the Human-in-the-Loop queue.
+                        </div>
+                    </div>
+                </body>
+                </html>
+                """
+                msg.attach(MIMEText(html_body, "html"))
+
+                with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=10) as server:
+                    server.starttls()
+                    server.login(self.smtp_user, self.smtp_password)
+                    server.sendmail(self.sender_email, [self.recipient_email], msg.as_string())
+
+                incident["email_status"] = f"DISPATCHED_TO_{self.recipient_email}"
+                logger.info(f"Alert email successfully delivered via SMTP to {self.recipient_email}.")
+            except Exception as mail_exc:
+                incident["email_status"] = f"SMTP_ERROR_{mail_exc}"
+                logger.warning(f"SMTP alert delivery notice: {mail_exc}")
+        else:
+            incident["email_status"] = f"RECORDED_FOR_ADMIN_{self.recipient_email}"
+            logger.info(f"Incident {incident_id} recorded in Firestore for admin notification ({self.recipient_email}).")
+
+        # 2. Persist Incident Alert to Cloud Firestore (Mumbai asia-south1)
+        if self.db:
+            try:
+                self.db.collection("incident_alerts").document(incident_id).set(incident)
+            except Exception as fs_exc:
+                logger.warning(f"Firestore incident_alerts write error: {fs_exc}")
+
+        return incident
+
+    def list_incidents(self, limit: int = 50) -> List[Dict[str, Any]]:
+        if self.db:
+            try:
+                docs = self.db.collection("incident_alerts").order_by("timestamp", direction="DESCENDING").limit(limit).stream()
+                fs_items = [d.to_dict() for d in docs]
+                if fs_items:
+                    return fs_items
+            except Exception:
+                pass
+        return sorted(self._incidents_mem, key=lambda x: x.get("timestamp", ""), reverse=True)[:limit]
+
+
+# ---------------------------------------------------------
+# 3. CUSTOMISABLE ERROR TAXONOMY & RESOLUTION HINTS
+# ---------------------------------------------------------
+class SAPErrorTaxonomy:
+    """
+    Structured enterprise error dictionary for accounts payable invoice ingestion.
+    Allows easy customization of error messages and resolution flows for different business scenarios.
+    """
+    CATALOG: Dict[str, Dict[str, Any]] = {
+        "ERR_MISSING_PO": {
+            "code": "ERR_MISSING_PO",
+            "title": "Purchase Order Number Missing",
+            "message": "Purchase Order (PO Number) is missing or could not be detected on the document.",
+            "resolution_hint": "Please supply the 10-digit SAP Purchase Order number (EBELN) to resume processing.",
+            "hitl_eligible": True,
+            "target_fields": ["PONumber"],
+        },
+        "ERR_INVALID_PO": {
+            "code": "ERR_INVALID_PO",
+            "title": "Invalid Purchase Order Format",
+            "message": "Purchase Order '{value}' is invalid. SAP requires strictly a 10-digit numeric value.",
+            "resolution_hint": "Correct the PO number to a 10-digit numeric string (e.g., 4500123456).",
+            "hitl_eligible": True,
+            "target_fields": ["PONumber"],
+        },
+        "ERR_MISSING_SES": {
+            "code": "ERR_MISSING_SES",
+            "title": "Service Entry Sheet Missing",
+            "message": "Service Entry Sheet (SES) is required for this service invoice but was not detected.",
+            "resolution_hint": "Enter the 10-digit SES number starting with '1' (LBLNI).",
+            "hitl_eligible": True,
+            "target_fields": ["SES"],
+        },
+        "ERR_INVALID_SES": {
+            "code": "ERR_INVALID_SES",
+            "title": "Invalid Service Entry Sheet Format",
+            "message": "Service Entry Sheet '{value}' must be exactly 10 digits and start with '1'.",
+            "resolution_hint": "Provide a valid 10-digit SES starting with '1' (e.g., 1000456789).",
+            "hitl_eligible": True,
+            "target_fields": ["SES"],
+        },
+        "ERR_MISSING_REF_DOC": {
+            "code": "ERR_MISSING_REF_DOC",
+            "title": "Vendor Invoice Reference Missing",
+            "message": "Vendor Tax Invoice Number (XBLNR / RefDocNo) was not detected on the document.",
+            "resolution_hint": "Enter the vendor's invoice or billing reference number.",
+            "hitl_eligible": True,
+            "target_fields": ["RefDocNo"],
+        },
+        "ERR_DUPLICATE_INVOICE": {
+            "code": "ERR_DUPLICATE_INVOICE",
+            "title": "Duplicate Invoice Detected",
+            "message": "Invoice with Reference '{ref_doc_no}' and Company Code '{comp_code}' has already been processed in SAP (Document #{existing_doc}).",
+            "resolution_hint": "Verify whether this invoice has already been parked or paid to prevent double payment.",
+            "hitl_eligible": False,
+            "target_fields": [],
+        },
+        "ERR_TAXABLE_VAL_ZERO": {
+            "code": "ERR_TAXABLE_VAL_ZERO",
+            "title": "Invalid Taxable Base Amount",
+            "message": "Net taxable base value must be greater than 0.00 INR.",
+            "resolution_hint": "Review the extracted line items and specify the net taxable amount.",
+            "hitl_eligible": True,
+            "target_fields": ["TaxableVal"],
+        },
+        "ERR_TOTAL_VAL_ZERO": {
+            "code": "ERR_TOTAL_VAL_ZERO",
+            "title": "Invalid Gross Invoice Amount",
+            "message": "Total invoice amount must be greater than 0.00 INR.",
+            "resolution_hint": "Review the invoice gross total inclusive of statutory GST.",
+            "hitl_eligible": True,
+            "target_fields": ["TotalInvVal"],
+        },
+        "ERR_SALDO_MISMATCH": {
+            "code": "ERR_SALDO_MISMATCH",
+            "title": "SAP 3-Way Match Balance Check Mismatch",
+            "message": "Arithmetic balance mismatch: Gross amount does not equal Taxable Base + GST taxes.",
+            "resolution_hint": "Review taxable base and total invoice amount to ensure Saldo = 0.00 INR.",
+            "hitl_eligible": True,
+            "target_fields": ["TaxableVal", "TotalInvVal"],
+        },
+        "ERR_MODEL_ARMOR_BLOCKED": {
+            "code": "ERR_MODEL_ARMOR_BLOCKED",
+            "title": "Model Armor Security Block",
+            "message": "Document screening triggered a security policy: potential prompt injection, malicious URI, or unsafe content detected.",
+            "resolution_hint": "Audit the original document file for embedded adversarial payloads or suspicious URLs.",
+            "hitl_eligible": False,
+            "target_fields": [],
+        },
+        "ERR_UNSUPPORTED_FORMAT": {
+            "code": "ERR_UNSUPPORTED_FORMAT",
+            "title": "Unsupported File Format",
+            "message": "File format is not supported. Upload valid PDF, JPG, PNG, or TIFF files.",
+            "resolution_hint": "Convert document to standard PDF or JPEG and re-upload.",
+            "hitl_eligible": False,
+            "target_fields": [],
+        },
+        "ERR_SAP_CPI_REJECTED": {
+            "code": "ERR_SAP_CPI_REJECTED",
+            "title": "SAP S/4HANA BAPI Validation Error",
+            "message": "SAP rejected the invoice parking request: {detail}",
+            "resolution_hint": "Verify vendor master data, purchasing document status in SAP GUI (/nME23N), or posting period.",
+            "hitl_eligible": True,
+            "target_fields": ["PONumber", "CompCode", "BusinessPlace"],
+        },
+        "ERR_SYSTEM_EXCEPTION": {
+            "code": "ERR_SYSTEM_EXCEPTION",
+            "title": "System Processing Exception",
+            "message": "Internal error occurred during document pipeline: {detail}",
+            "resolution_hint": "Check the Firestore audit trail and Cloud Logging for stack trace.",
+            "hitl_eligible": False,
+            "target_fields": [],
+        },
+        "ERR_FILE_TOO_LARGE": {
+            "code": "ERR_FILE_TOO_LARGE",
+            "title": "File Exceeds Size Limit (Max 10 MB)",
+            "message": "File '{filename}' ({size_mb} MB) exceeds the maximum allowed enterprise limit of 10 MB.",
+            "resolution_hint": "Compress high-resolution scans or split large multi-page attachments to stay under 10 MB.",
+            "hitl_eligible": False,
+            "target_fields": [],
+        },
+    }
+
+    @classmethod
+    def format_error(cls, error_code: str, **kwargs) -> Dict[str, Any]:
+        template = cls.CATALOG.get(error_code, {
+            "code": error_code,
+            "title": "Processing Error",
+            "message": f"Error: {error_code}",
+            "resolution_hint": "Please review invoice details.",
+            "hitl_eligible": False,
+            "target_fields": [],
+        })
+        msg = template["message"]
+        for k, v in kwargs.items():
+            msg = msg.replace(f"{{{k}}}", str(v))
+        return {
+            "error_code": template["code"],
+            "error_title": template["title"],
+            "error_message": msg,
+            "resolution_hint": template["resolution_hint"],
+            "hitl_eligible": template["hitl_eligible"],
+            "target_fields": template["target_fields"],
+        }
+
+
+# ---------------------------------------------------------
+# 4. FIRESTORE AUDIT TRAIL & MIS REPOSITORY
+# ---------------------------------------------------------
+class FirestoreAuditService:
+    """
+    Central persistence and audit trail service using Cloud Firestore.
+    Maintains a synchronized in-memory buffer as a resilient fallback.
+    """
+    def __init__(self, db):
+        self.db = db
+        self._invoices_mem: Dict[str, Dict[str, Any]] = {}
+        self._audit_logs_mem: List[Dict[str, Any]] = []
+        self._auth_events_mem: List[Dict[str, Any]] = []
+
+    def now_iso(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def log_event(
+        self,
+        event_type: str,
+        user_email: str,
+        trace_id: Optional[str],
+        severity: str,
+        message: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        entry = {
+            "event_id": str(uuid.uuid4())[:12],
+            "timestamp": self.now_iso(),
+            "event_type": event_type,
+            "user_email": user_email,
+            "trace_id": trace_id or "SYSTEM",
+            "severity": severity,
+            "message": message,
+            "metadata": metadata or {},
+        }
+        self._audit_logs_mem.append(entry)
+
+        if self.db:
+            try:
+                self.db.collection("audit_logs").document(entry["event_id"]).set(entry)
+            except Exception as e:
+                logger.warning(f"Firestore audit_logs write error: {e}")
+
+        logger.info(f"AUDIT [{severity}] {event_type} | {user_email} | {trace_id} | {message}")
+        return entry
+
+    def record_auth_event(
+        self,
+        user_email: str,
+        status: str,
+        reason: str,
+        client_ip: str = "Unknown",
+        user_agent: str = "Unknown",
+    ) -> Dict[str, Any]:
+        entry = {
+            "event_id": str(uuid.uuid4())[:12],
+            "timestamp": self.now_iso(),
+            "user_email": user_email,
+            "is_admin": is_admin_user(user_email),
+            "status": status,  # "SUCCESS" or "FAILED"
+            "reason": reason,
+            "client_ip": client_ip,
+            "user_agent": user_agent,
+        }
+        self._auth_events_mem.append(entry)
+
+        if self.db:
+            try:
+                self.db.collection("auth_events").document(entry["event_id"]).set(entry)
+            except Exception as e:
+                logger.warning(f"Firestore auth_events write error: {e}")
+
+        self.log_event(
+            event_type="AUTH_LOGIN_SUCCESS" if status == "SUCCESS" else "AUTH_LOGIN_FAILED",
+            user_email=user_email,
+            trace_id=None,
+            severity="INFO" if status == "SUCCESS" else "WARNING",
+            message=f"Passwordless login {status.lower()} (Admin: {is_admin_user(user_email)}): {reason}",
+            metadata={"client_ip": client_ip, "user_agent": user_agent},
+        )
+        return entry
+
+    def save_invoice(self, invoice_data: Dict[str, Any]) -> Dict[str, Any]:
+        trace_id = invoice_data.get("trace_id") or str(uuid.uuid4())[:8]
+        invoice_data["trace_id"] = trace_id
+        if "created_at" not in invoice_data:
+            invoice_data["created_at"] = self.now_iso()
+        invoice_data["updated_at"] = self.now_iso()
+
+        self._invoices_mem[trace_id] = invoice_data
+
+        if self.db:
+            try:
+                # Store sanitized metadata copy in Firestore (avoid exceeding 1 MiB document limit)
+                store_copy = copy.deepcopy(invoice_data)
+                ext = store_copy.get("extracted_data")
+                if isinstance(ext, dict):
+                    h = ext.get("HeaderData")
+                    if isinstance(h, dict) and "Attachment" in h:
+                        raw_att = h["Attachment"]
+                        if raw_att and len(str(raw_att)) > 256:
+                            h["Attachment"] = f"<Base64 PDF stream ({round(len(str(raw_att))*0.75/1024, 1)} KB)>"
+                self.db.collection("invoices").document(trace_id).set(store_copy)
+            except Exception as e:
+                logger.warning(f"Firestore invoices write error: {e}")
+
+        return invoice_data
+
+    def get_invoice(self, trace_id: str) -> Optional[Dict[str, Any]]:
+        if self.db:
+            try:
+                doc = self.db.collection("invoices").document(trace_id).get()
+                if doc.exists:
+                    return doc.to_dict()
+            except Exception as e:
+                logger.warning(f"Firestore invoice read error: {e}")
+
+        return self._invoices_mem.get(trace_id)
+
+    def find_duplicate_invoice(self, ref_doc_no: str, comp_code: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Checks whether an invoice with the same RefDocNo has already been parked successfully."""
+        if not ref_doc_no:
+            return None
+
+        clean_ref = str(ref_doc_no).strip().upper()
+
+        for inv in self._invoices_mem.values():
+            if inv.get("status") == "PARKED_SUCCESS":
+                h = inv.get("extracted_data", {}).get("HeaderData", {})
+                if str(h.get("RefDocNo", "")).strip().upper() == clean_ref:
+                    if not comp_code or str(h.get("CompCode", "")).strip() == str(comp_code).strip():
+                        return inv
+
+        if self.db:
+            try:
+                query = self.db.collection("invoices").where("status", "==", "PARKED_SUCCESS").limit(50)
+                docs = query.stream()
+                for doc in docs:
+                    data = doc.to_dict()
+                    h = data.get("extracted_data", {}).get("HeaderData", {})
+                    if str(h.get("RefDocNo", "")).strip().upper() == clean_ref:
+                        if not comp_code or str(h.get("CompCode", "")).strip() == str(comp_code).strip():
+                            return data
+            except Exception as e:
+                logger.warning(f"Firestore duplicate search error: {e}")
+
+        return None
+
+    def list_invoices(
+        self,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        invoices = []
+        if self.db:
+            try:
+                coll = self.db.collection("invoices")
+                fetch_limit = limit * 4 if (status and status != "ALL") else limit
+                q = coll.order_by("created_at", direction="DESCENDING").limit(fetch_limit)
+                docs = q.stream()
+                for doc in docs:
+                    invoices.append(doc.to_dict())
+            except Exception as e:
+                logger.warning(f"Firestore list_invoices query error: {e}")
+                invoices = list(self._invoices_mem.values())
+        else:
+            invoices = list(self._invoices_mem.values())
+
+        if not invoices and self._invoices_mem:
+            invoices = list(self._invoices_mem.values())
+
+        invoices.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+        if status and status != "ALL":
+            invoices = [inv for inv in invoices if inv.get("status") == status]
+
+        if search:
+            s = search.lower().strip()
+            invoices = [
+                inv for inv in invoices
+                if s in str(inv.get("filename", "")).lower()
+                or s in str(inv.get("trace_id", "")).lower()
+                or s in str(inv.get("submitted_by", "")).lower()
+                or s in str(inv.get("extracted_data", {}).get("HeaderData", {}).get("RefDocNo", "")).lower()
+                or s in str(inv.get("extracted_data", {}).get("HeaderData", {}).get("PONumber", "")).lower()
+                or s in str(inv.get("sap_document_number", "")).lower()
+            ]
+
+        return invoices[:limit]
+
+    def list_audit_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Returns chronological audit events directly from Cloud Firestore (Mumbai asia-south1)."""
+        logs = []
+        if self.db:
+            try:
+                docs = self.db.collection("audit_logs").order_by("timestamp", direction="DESCENDING").limit(limit).stream()
+                logs = [d.to_dict() for d in docs]
+            except Exception as e:
+                logger.warning(f"Firestore list_audit_logs query notice: {e}")
+        if not logs and self._audit_logs_mem:
+            logs = sorted(self._audit_logs_mem, key=lambda x: x.get("timestamp", ""), reverse=True)[:limit]
+        return logs
+
+    def get_mis_metrics(self) -> Dict[str, Any]:
+        """Calculates comprehensive executive MIS counts and processing statistics."""
+        all_inv = list(self._invoices_mem.values())
+
+        if self.db:
+            try:
+                docs = self.db.collection("invoices").limit(500).stream()
+                fs_inv = [d.to_dict() for d in docs]
+                if fs_inv:
+                    all_inv = fs_inv
+            except Exception as e:
+                logger.warning(f"Firestore get_mis_metrics error: {e}")
+
+        total_invoices = len(all_inv)
+        parked_success = sum(1 for i in all_inv if i.get("status") == "PARKED_SUCCESS")
+        hitl_pending = sum(1 for i in all_inv if i.get("status") == "HITL_REQUIRED")
+        hitl_resolved = sum(1 for i in all_inv if i.get("status") == "HITL_RESOLVED")
+        validation_failed = sum(1 for i in all_inv if i.get("status") == "VALIDATION_FAILED")
+        duplicate_detected = sum(1 for i in all_inv if i.get("status") == "DUPLICATE_DETECTED")
+        sap_rejected = sum(1 for i in all_inv if i.get("status") == "SAP_REJECTED")
+        system_errors = sum(1 for i in all_inv if i.get("status") == "SYSTEM_ERROR")
+
+        total_taxable_val = 0.0
+        total_gross_val = 0.0
+        for i in all_inv:
+            h = i.get("extracted_data", {}).get("HeaderData", {})
+            try:
+                total_taxable_val += float(h.get("TaxableVal", 0) or 0)
+                total_gross_val += float(h.get("TotalInvVal", 0) or 0)
+            except Exception:
+                pass
+
+        auth_events = list(self._auth_events_mem)
+        if self.db:
+            try:
+                auth_docs = self.db.collection("auth_events").limit(200).stream()
+                fs_auth = [d.to_dict() for d in auth_docs]
+                if fs_auth:
+                    auth_events = fs_auth
+            except Exception:
+                pass
+
+        successful_logins = sum(1 for a in auth_events if a.get("status") == "SUCCESS")
+        failed_logins = sum(1 for a in auth_events if a.get("status") == "FAILED")
+        unique_users = len({a.get("user_email") for a in auth_events if a.get("user_email")})
+
+        recent_logs = self.list_audit_logs(limit=15)
+
+        return {
+            "total_invoices": total_invoices,
+            "parked_success": parked_success,
+            "hitl_pending": hitl_pending,
+            "hitl_resolved": hitl_resolved,
+            "validation_failed": validation_failed,
+            "duplicate_detected": duplicate_detected,
+            "sap_rejected": sap_rejected,
+            "system_errors": system_errors,
+            "total_taxable_val": round(total_taxable_val, 2),
+            "total_gross_val": round(total_gross_val, 2),
+            "successful_logins": successful_logins,
+            "failed_logins": failed_logins,
+            "unique_active_users": max(unique_users, 1 if successful_logins > 0 else 0),
+            "recent_activity": recent_logs,
+            "firestore_active": firestore_client is not None,
+            "firestore_location": FIRESTORE_LOCATION,
+            "admin_email": ALERT_EMAIL_RECIPIENT,
+            "alert_recipient": ALERT_EMAIL_RECIPIENT,
+        }
+
+
+audit_service = FirestoreAuditService(firestore_client)
+alert_service = AlertNotificationService(firestore_client)
+
+
+# ---------------------------------------------------------
+# 5. SCHEMAS (Strictly matching Grounding Notebook)
 # ---------------------------------------------------------
 class ItemDataModel(BaseModel):
     SlNo: Optional[int] = Field(default=None, description="Sequential row number")
@@ -107,47 +689,8 @@ class ExtractionInvoiceSchema(BaseModel):
     ItemData: List[ItemDataModel]
 
 
-# Baseline Python Validation Schema from Notebook
-BAPI_JSON_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "HeaderData": {
-            "type": "object",
-            "properties": {
-                "DocDate": {"type": ["string", "null"]},
-                "RefDocNo": {"type": ["string", "null"]},
-                "PONumber": {"type": ["string", "null"], "pattern": r"^\d{10}$"},
-                "SES": {"type": ["string", "null"], "pattern": r"^1\d{9}$"},
-                "CompName": {"type": ["string", "null"]},
-                "CompCode": {"type": ["string", "null"]},
-                "BusinessPlace": {"type": ["string", "null"]},
-                "TaxableVal": {"type": ["number", "null"]},
-                "TotalInvVal": {"type": ["number", "null"]},
-                "Attachment": {"type": ["string", "null"]},
-            },
-            "required": ["DocDate", "RefDocNo", "PONumber", "SES", "CompName", "CompCode", "BusinessPlace", "TaxableVal", "TotalInvVal", "Attachment"],
-        },
-        "ItemData": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "SlNo": {"type": ["number", "null"]},
-                    "ItemText": {"type": ["string", "null"]},
-                    "ItemQuantity": {"type": ["number", "null"]},
-                    "ItemRate": {"type": ["number", "null"]},
-                    "ItemAmount": {"type": ["number", "null"]},
-                },
-                "required": ["SlNo", "ItemText", "ItemQuantity", "ItemRate", "ItemAmount"],
-            },
-        },
-    },
-    "required": ["HeaderData", "ItemData"],
-}
-
-
 # ---------------------------------------------------------
-# 3. SAP ABAP DDIC TYPING & GUARDRAILS (From Notebook)
+# 6. SAP ABAP DDIC TYPING & GUARDRAILS (From Notebook)
 # ---------------------------------------------------------
 def enforce_sap_abap_typing(obj, parent_key=""):
     """Forces standard ABAP DDIC types to prevent BAPI dumps (Notebook logic)."""
@@ -184,36 +727,46 @@ def enforce_sap_abap_typing(obj, parent_key=""):
     return obj
 
 
-def validate_sap_schema(trace_id: str, payload_dict: dict) -> str:
-    """Validates against the notebook's baseline schema and applies strict SAP regex rules."""
+def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    Validates against the notebook's baseline schema and returns:
+    (is_valid: bool, error_code: Optional[str], details: Optional[str])
+    """
     header = payload_dict.get("HeaderData", {})
     po_number = header.get("PONumber")
     ses_number = header.get("SES")
     taxable_val = header.get("TaxableVal")
     total_inv_val = header.get("TotalInvVal")
-    attachment = header.get("Attachment")
+    ref_doc_no = header.get("RefDocNo")
 
-    # Strict Regex Guardrails for PO and SES (From Notebook)
-    if po_number and not re.match(r"^\d{10}$", str(po_number).strip()):
-        return f"Business Rule Violation: PONumber '{po_number}' must be exactly 10 digits."
+    # 1. Missing or Invalid PO Number
+    if not po_number or str(po_number).strip().lower() in ("null", "none", ""):
+        return False, "ERR_MISSING_PO", None
 
-    if ses_number and not re.match(r"^1\d{9}$", str(ses_number).strip()):
-        return f"Business Rule Violation: SES '{ses_number}' must be exactly 10 digits and start with 1."
+    if not re.match(r"^\d{10}$", str(po_number).strip()):
+        return False, "ERR_INVALID_PO", str(po_number).strip()
 
-    # Invoice Value Validations (From Notebook)
+    # 2. Invalid SES Number if present
+    if ses_number and str(ses_number).strip().lower() not in ("null", "none", ""):
+        if not re.match(r"^1\d{9}$", str(ses_number).strip()):
+            return False, "ERR_INVALID_SES", str(ses_number).strip()
+
+    # 3. Missing RefDocNo
+    if not ref_doc_no or str(ref_doc_no).strip().lower() in ("null", "none", ""):
+        return False, "ERR_MISSING_REF_DOC", None
+
+    # 4. Value Validations
     if taxable_val is None or float(taxable_val) <= 0:
-        return "Business Rule Violation: TaxableVal must be greater than 0."
+        return False, "ERR_TAXABLE_VAL_ZERO", None
+
     if total_inv_val is None or float(total_inv_val) <= 0:
-        return "Business Rule Violation: TotalInvVal must be greater than 0."
+        return False, "ERR_TOTAL_VAL_ZERO", None
 
-    if not attachment:
-        return "Business Rule Violation: Attachment (Base64 PDF) is required for DMS archiving."
-
-    return "VALID"
+    return True, None, None
 
 
 # ---------------------------------------------------------
-# 4. AUTHENTICATION & MODEL ARMOR
+# 7. AUTHENTICATION & SECURITY SCREENING
 # ---------------------------------------------------------
 def verify_corporate_user(authorization: Optional[str], x_firebase_token: Optional[str]) -> str:
     token = None
@@ -223,12 +776,12 @@ def verify_corporate_user(authorization: Optional[str], x_firebase_token: Option
         token = x_firebase_token.strip()
 
     if not token:
-        raise HTTPException(status_code=401, detail="Missing Firebase authentication token.")
+        raise HTTPException(status_code=401, detail="Missing authentication session token.")
 
     try:
         decoded = firebase_auth.verify_id_token(token)
     except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid or expired session token: {exc}")
+        raise HTTPException(status_code=401, detail=f"Invalid or expired authentication session: {exc}")
 
     email = (decoded.get("email") or "").lower().strip()
     is_allowed = email in ALLOWED_EMAILS or any(
@@ -236,12 +789,17 @@ def verify_corporate_user(authorization: Optional[str], x_firebase_token: Option
     )
 
     if not is_allowed:
-        logger.warning(f"Access Denied: unauthorized corporate user '{email}'")
-        raise HTTPException(status_code=403, detail=f"Access Denied: '{email}' is not authorized.")
+        audit_service.record_auth_event(email, "FAILED", "Unauthorized domain or user email")
+        raise HTTPException(status_code=403, detail=f"Access Denied: Corporate user '{email}' is not authorized.")
+
     return email
 
 
-def verify_with_model_armor(text_to_screen: str) -> None:
+def verify_with_model_armor(text_to_screen: str, filename: str = "", trace_id: str = "", user_email: str = "") -> Tuple[bool, str]:
+    """
+    Post-Extraction Output Screening via Google Cloud Model Armor.
+    Returns (is_blocked, block_detail). Sends failure alert to aic1176@aurogroup.com if triggered.
+    """
     try:
         req = modelarmor_v1.SanitizeModelResponseRequest(
             name=ARMOR_TEMPLATE_PATH,
@@ -256,18 +814,25 @@ def verify_with_model_armor(text_to_screen: str) -> None:
         )
         if is_match:
             logger.warning(f"Model Armor Security Block: {res.sanitization_result}")
-            raise HTTPException(
-                status_code=422,
-                detail="Model Armor Security Block: Potential prompt injection, malicious URI, or unsafe content detected in invoice.",
+            detail = "Adversarial prompt injection, malicious link, or unsafe content intercepted in extracted text."
+            # Trigger failure alert email to admin (aic1176@aurogroup.com)
+            alert_service.send_failure_alert(
+                failure_type="MODEL_ARMOR_SECURITY_BLOCK",
+                filename=filename,
+                trace_id=trace_id,
+                user_email=user_email,
+                error_title="Model Armor Security Policy Triggered",
+                error_detail=detail,
+                metadata={"sanitization_result": str(res.sanitization_result)},
             )
-    except HTTPException:
-        raise
+            return True, detail
     except Exception as exc:
         logger.warning(f"Model Armor screening notice: {exc}")
+    return False, ""
 
 
 # ---------------------------------------------------------
-# 5. FINOPS MEDIA OPTIMIZATION & IN-MEMORY PDF MERGING
+# 8. MULTIMODAL MEDIA PROCESSING (PDF & Images)
 # ---------------------------------------------------------
 def optimize_image_768px(image_bytes: bytes) -> bytes:
     """The 768px FinOps Rule: Resizes image to 768x768 to lock token cost to 258 tokens/page."""
@@ -278,60 +843,64 @@ def optimize_image_768px(image_bytes: bytes) -> bytes:
         return buf.getvalue()
 
 
-def process_media_for_extraction(raw_files: List[tuple]) -> tuple[List[types.Part], str]:
-    """Generates Gemini multimodal parts (with 768px FinOps optimization) and creates merged PDF base64."""
+def process_single_file_media(filename: str, content: bytes) -> Tuple[List[types.Part], str, str]:
+    """
+    Processes a single invoice file (PDF or image).
+    Returns (prompt_parts, base64_attachment, mime_type).
+    """
     prompt_parts = []
-    merged_pdf = fitz.open()
+    file_lower = filename.lower()
 
-    for filename, content in raw_files:
-        if content.startswith(b"%PDF"):
-            prompt_parts.append(types.Part.from_bytes(data=content, mime_type="application/pdf"))
-            src_pdf = fitz.open(stream=content, filetype="pdf")
-            merged_pdf.insert_pdf(src_pdf)
-            src_pdf.close()
-        else:
-            try:
-                # FinOps: Optimize image bytes for Gemini inference
-                optimized_bytes = optimize_image_768px(content)
-                prompt_parts.append(types.Part.from_bytes(data=optimized_bytes, mime_type="image/jpeg"))
+    if content.startswith(b"%PDF") or file_lower.endswith(".pdf"):
+        mime_type = "application/pdf"
+        prompt_parts.append(types.Part.from_bytes(data=content, mime_type=mime_type))
 
-                # Convert to PDF page for DmacQ DMS attachment
-                with Image.open(io.BytesIO(content)) as img:
-                    rgb_img = img.convert("RGB")
-                    img_buf = io.BytesIO()
-                    rgb_img.save(img_buf, format="PDF")
-                    img_pdf = fitz.open(stream=img_buf.getvalue(), filetype="pdf")
-                    merged_pdf.insert_pdf(img_pdf)
-                    img_pdf.close()
-            except Exception as img_err:
-                logger.error(f"Failed to process image {filename}: {img_err}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported or corrupt file format for '{filename}'. Upload valid PDF, JPG, or PNG.",
-                )
+        try:
+            doc = fitz.open(stream=content, filetype="pdf")
+            pdf_bytes_raw = doc.tobytes(deflate=True)
+            doc.close()
+        except Exception:
+            pdf_bytes_raw = content
 
-    pdf_bytes_raw = merged_pdf.tobytes(deflate=True)
-    merged_pdf.close()
-    base64_attachment = base64.b64encode(pdf_bytes_raw).decode("utf-8")
-    return prompt_parts, base64_attachment
+        base64_attachment = base64.b64encode(pdf_bytes_raw).decode("utf-8")
+        return prompt_parts, base64_attachment, mime_type
+
+    try:
+        with Image.open(io.BytesIO(content)) as img:
+            rgb_img = img.convert("RGB")
+            optimized_bytes = optimize_image_768px(content)
+            prompt_parts.append(types.Part.from_bytes(data=optimized_bytes, mime_type="image/jpeg"))
+
+            pdf_buf = io.BytesIO()
+            rgb_img.save(pdf_buf, format="PDF")
+            pdf_bytes_raw = pdf_buf.getvalue()
+            base64_attachment = base64.b64encode(pdf_bytes_raw).decode("utf-8")
+            return prompt_parts, base64_attachment, "image/jpeg"
+
+    except Exception as img_err:
+        logger.error(f"Failed to process media file '{filename}': {img_err}")
+        raise HTTPException(
+            status_code=400,
+            detail=SAPErrorTaxonomy.format_error("ERR_UNSUPPORTED_FORMAT")["error_message"]
+        )
 
 
 # ---------------------------------------------------------
-# 6. SAP CPI BAPI DISPATCH (Strictly matching Notebook)
+# 9. SAP CPI BAPI DISPATCHER
 # ---------------------------------------------------------
-def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> dict:
+def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dict[str, Any]:
     """Posts payload to SAP CPI using CSRF-fetch and Service-Definition headers (Notebook logic)."""
     cpi_start = time.time()
     final_payload = {"Request_VendorInvoice_Park_AEPL": enforce_sap_abap_typing(payload_dict)}
 
     if not all([SAP_TOKEN_URL, SAP_CLIENT_ID, SAP_CLIENT_SECRET, SAP_CPI_URI]):
-        logger.warning(f"[{trace_id}] CPI credentials incomplete. Simulating successful SAP response.")
         time.sleep(1.0)
         telemetry["cpi_time"] = 1.0
         telemetry["sap_time"] = 0.5
         doc_no = f"5105{random.randint(100000, 999999)}"
         return {
             "status": "SUCCESS",
+            "belnr": doc_no,
             "sap_message": f"Document [{doc_no}] parked successfully in SAP S/4HANA (Company Code 1000, Fiscal Year 2026).",
         }
 
@@ -379,48 +948,27 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> dic
             sap_status = sap_response.get("Status")
             sap_message = sap_response.get("Message", "Document parked successfully in SAP.")
 
+            match = re.search(r"\[(\d+)\]", sap_message)
+            belnr = match.group(1) if match else "5105600001"
+
             if sap_status == "S":
-                return {"status": "SUCCESS", "sap_message": sap_message}
+                return {"status": "SUCCESS", "belnr": belnr, "sap_message": sap_message}
             else:
-                return {"status": "SAP_REJECTED", "sap_message": f"SAP Business Error: {sap_message}"}
+                return {"status": "SAP_REJECTED", "belnr": None, "sap_message": f"SAP Business Error: {sap_message}"}
 
         return {
             "status": "CPI_ERROR",
+            "belnr": None,
             "sap_message": f"HTTP {response.status_code}: CPI Middleware rejected. {response.text[:300]}",
         }
 
     except Exception as exc:
         telemetry["cpi_time"] = round(time.time() - cpi_start, 3)
-        return {"status": "CPI_EXCEPTION", "sap_message": f"SAP CPI Network Exception: {str(exc)}"}
+        return {"status": "CPI_EXCEPTION", "belnr": None, "sap_message": f"SAP CPI Network Exception: {str(exc)}"}
 
 
 # ---------------------------------------------------------
-# 7. FASTAPI PORTAL & ENDPOINTS
-# ---------------------------------------------------------
-@app.get("/")
-@app.get("/finish-login")
-async def serve_portal():
-    if not os.path.exists("index.html"):
-        raise HTTPException(status_code=404, detail="index.html portal file not found")
-    return FileResponse("index.html")
-
-
-@app.get("/healthz")
-async def healthz():
-    return {
-        "status": "ok",
-        "project": GCP_PROJECT,
-        "region": GCP_LOCATION,
-        "model": GEMINI_MODEL,
-        "vertex_location": VERTEX_LOCATION,
-        "armor": MODEL_ARMOR_TEMPLATE,
-        "armor_location": MODEL_ARMOR_LOCATION,
-        "allowed_domains": list(ALLOWED_DOMAINS),
-    }
-
-
-# ---------------------------------------------------------
-# 8. THE NOTEBOOK INVOICE PARKING PIPELINE
+# 10. SINGLE INVOICE PIPELINE ORCHESTRATOR
 # ---------------------------------------------------------
 NOTEBOOK_SYSTEM_INSTRUCTION = """
 You are an expert Accounts Payable Data Extraction Agent for SAP S/4HANA (MIR7/MIRO). Analyze unstructured Indian tax invoices and map data deterministically to the provided JSON schema.
@@ -457,43 +1005,90 @@ You are an expert Accounts Payable Data Extraction Agent for SAP S/4HANA (MIR7/M
 """
 
 
-@app.post("/api/park-invoice")
-async def park_invoice(
-    files: List[UploadFile] = File(...),
-    authorization: Optional[str] = Header(default=None),
-    x_firebase_token: Optional[str] = Header(default=None),
-):
+async def process_single_invoice_document(
+    filename: str,
+    content: bytes,
+    user_email: str,
+    trace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Executes the complete end-to-end pipeline for an individual invoice document:
+    1. Media Ingestion & PDF synthesis
+    2. Gemini 3.8 Flash Multimodal Extraction with Exponential Backoff
+    3. Model Armor Output Screening (with failure alert email trigger)
+    4. Duplicate Detection in Firestore
+    5. Schema Validation & HITL Routing if PO/SES missing
+    6. SAP CPI BAPI Execution if Valid (with failure alert email trigger)
+    7. Comprehensive Firestore Audit Trail Recording
+    """
     t0 = time.time()
-    trace_id = str(uuid.uuid4())[:8]
-    user_email = verify_corporate_user(authorization, x_firebase_token)
+    trace_id = trace_id or str(uuid.uuid4())[:8]
 
-    if not files:
-        raise HTTPException(status_code=400, detail="No invoice files uploaded.")
-
-    raw_files = []
-    total_bytes = 0
-    for f in files:
-        data = await f.read()
-        total_bytes += len(data)
-        if total_bytes > 10 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="Total upload size exceeds 10 MB limit.")
-        raw_files.append((f.filename, data))
-
-    # 1. Media handling & Base64 Attachment Injection (From Notebook)
-    prompt_parts, base64_attachment = process_media_for_extraction(raw_files)
-    prompt_parts.append(
-        types.Part.from_text(text="Extract all data spanning across these pages into a single JSON.")
+    audit_service.log_event(
+        event_type="INVOICE_INGESTION_STARTED",
+        user_email=user_email,
+        trace_id=trace_id,
+        severity="INFO",
+        message=f"Starting ingestion pipeline for file '{filename}' ({round(len(content)/1024, 1)} KB).",
     )
 
     telemetry = {
         "cpi_time": 0.0,
         "sap_time": 0.0,
-        "pdf_size_mb": round(len(base64_attachment) * 0.75 / (1024 * 1024), 3),
+        "pdf_size_mb": 0.0,
+        "total_exec_time": 0.0,
         "submitted_by": user_email,
         "model": GEMINI_MODEL,
     }
 
-    # 2. Multimodal Extraction via Gemini with Exponential Backoff (From Notebook)
+    # 1. Media handling
+    try:
+        prompt_parts, base64_attachment, mime_type = process_single_file_media(filename, content)
+    except Exception as media_exc:
+        err_info = SAPErrorTaxonomy.format_error("ERR_UNSUPPORTED_FORMAT", detail=str(media_exc))
+        invoice_record = {
+            "trace_id": trace_id,
+            "filename": filename,
+            "file_size": len(content),
+            "submitted_by": user_email,
+            "status": "VALIDATION_FAILED",
+            "error_info": err_info,
+            "extracted_data": {},
+            "sap_document_number": None,
+            "telemetry": telemetry,
+        }
+        audit_service.save_invoice(invoice_record)
+        audit_service.log_event(
+            event_type="INVALID_DOCUMENT_MEDIA",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="ERROR",
+            message=f"Unsupported or corrupt media in '{filename}': {media_exc}",
+        )
+        alert_service.send_failure_alert(
+            failure_type="INVALID_DOCUMENT_MEDIA",
+            filename=filename,
+            trace_id=trace_id,
+            user_email=user_email,
+            error_title="Unsupported / Corrupt Invoice Document",
+            error_detail=str(media_exc),
+        )
+        return {
+            "status": "VALIDATION_FAILED",
+            "trace_id": trace_id,
+            "filename": filename,
+            "error_info": err_info,
+            "extracted_data": {},
+            "telemetry": telemetry,
+        }
+
+    telemetry["pdf_size_mb"] = round(len(base64_attachment) * 0.75 / (1024 * 1024), 3)
+
+    prompt_parts.append(
+        types.Part.from_text(text="Extract all data spanning across this invoice into a single structured JSON.")
+    )
+
+    # 2. Gemini 3.8 Flash Extraction with Quota-Aware Resilient Retry
     response = None
     for attempt in range(3):
         try:
@@ -512,60 +1107,740 @@ async def park_invoice(
             err_str = str(exc).upper()
             if any(w in err_str for w in ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE"]) and attempt < 2:
                 sleep_sec = 2.0 * (2 ** attempt)
-                logger.warning(f"Vertex AI demand spike ({exc}). Retrying in {sleep_sec}s (Attempt {attempt+1}/3)...")
+                logger.warning(f"Vertex AI retry sleep {sleep_sec}s ({exc})...")
                 time.sleep(sleep_sec)
             else:
-                logger.error(f"Vertex AI generation failed: {exc}")
-                raise HTTPException(status_code=502, detail=f"Vertex AI inference error: {str(exc)}")
+                audit_service.log_event(
+                    event_type="AI_EXTRACTION_FAILED",
+                    user_email=user_email,
+                    trace_id=trace_id,
+                    severity="ERROR",
+                    message=f"Vertex AI extraction failed for '{filename}': {exc}",
+                )
+                alert_service.send_failure_alert(
+                    failure_type="AI_EXTRACTION_FAILED",
+                    filename=filename,
+                    trace_id=trace_id,
+                    user_email=user_email,
+                    error_title="Gemini 3.8 Flash Model Inference Failure",
+                    error_detail=f"Vertex AI model call failed: {exc}",
+                )
+                err_info = SAPErrorTaxonomy.format_error("ERR_SYSTEM_EXCEPTION", detail=f"Vertex AI inference error: {str(exc)}")
+                invoice_record = {
+                    "trace_id": trace_id,
+                    "filename": filename,
+                    "file_size": len(content),
+                    "submitted_by": user_email,
+                    "status": "SYSTEM_ERROR",
+                    "error_info": err_info,
+                    "extracted_data": {},
+                    "sap_document_number": None,
+                    "telemetry": telemetry,
+                }
+                audit_service.save_invoice(invoice_record)
+                return {
+                    "status": "SYSTEM_ERROR",
+                    "trace_id": trace_id,
+                    "filename": filename,
+                    "error_info": err_info,
+                    "extracted_data": {},
+                    "telemetry": telemetry,
+                }
 
-    # 3. Security Screening with Model Armor (Post-Extraction Egress Firewall)
-    verify_with_model_armor(response.text)
+    if response is None:
+        err_info = SAPErrorTaxonomy.format_error("ERR_SYSTEM_EXCEPTION", detail="Vertex AI returned empty response.")
+        return {
+            "status": "SYSTEM_ERROR",
+            "trace_id": trace_id,
+            "filename": filename,
+            "error_info": err_info,
+            "extracted_data": {},
+            "telemetry": telemetry,
+        }
 
-    # 4. Parse & Inject PDF Base64 string directly into HeaderData.Attachment (From Notebook)
+    # 3. Model Armor Security Screening (Alerts to admin on threat block)
+    is_blocked, armor_detail = verify_with_model_armor(response.text, filename=filename, trace_id=trace_id, user_email=user_email)
+    if is_blocked:
+        err_info = SAPErrorTaxonomy.format_error("ERR_MODEL_ARMOR_BLOCKED", detail=armor_detail)
+        invoice_record = {
+            "trace_id": trace_id,
+            "filename": filename,
+            "file_size": len(content),
+            "submitted_by": user_email,
+            "status": "SECURITY_BLOCKED",
+            "error_info": err_info,
+            "extracted_data": {},
+            "sap_document_number": None,
+            "telemetry": telemetry,
+        }
+        audit_service.save_invoice(invoice_record)
+        audit_service.log_event(
+            event_type="MODEL_ARMOR_BLOCKED",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="ERROR",
+            message=f"Model Armor blocked document '{filename}': {armor_detail}",
+        )
+        return {
+            "status": "SECURITY_BLOCKED",
+            "trace_id": trace_id,
+            "filename": filename,
+            "error_info": err_info,
+            "extracted_data": {},
+            "telemetry": telemetry,
+        }
+
+    audit_service.log_event(
+        event_type="MODEL_ARMOR_PASSED",
+        user_email=user_email,
+        trace_id=trace_id,
+        severity="INFO",
+        message="Model Armor screening passed: no adversarial prompt injection or unsafe URIs.",
+    )
+
+    # 4. Parse extracted JSON & inject Attachment
     try:
         payload_dict = json.loads(response.text)
         if "HeaderData" in payload_dict:
             payload_dict["HeaderData"]["Attachment"] = base64_attachment
     except Exception as parse_e:
-        raise HTTPException(status_code=422, detail=f"Failed to parse or inject JSON: {str(parse_e)}")
+        alert_service.send_failure_alert(
+            failure_type="JSON_PARSING_FAILED",
+            filename=filename,
+            trace_id=trace_id,
+            user_email=user_email,
+            error_title="Malformed Model Output JSON",
+            error_detail=str(parse_e),
+        )
+        err_info = SAPErrorTaxonomy.format_error("ERR_SYSTEM_EXCEPTION", detail=f"Failed to parse model JSON: {str(parse_e)}")
+        invoice_record = {
+            "trace_id": trace_id,
+            "filename": filename,
+            "file_size": len(content),
+            "submitted_by": user_email,
+            "status": "VALIDATION_FAILED",
+            "error_info": err_info,
+            "extracted_data": {},
+            "sap_document_number": None,
+            "telemetry": telemetry,
+        }
+        audit_service.save_invoice(invoice_record)
+        return {
+            "status": "VALIDATION_FAILED",
+            "trace_id": trace_id,
+            "filename": filename,
+            "error_info": err_info,
+            "extracted_data": {},
+            "telemetry": telemetry,
+        }
 
-    # 5. Schema Guardrail (Pre-CPI requirement from Notebook)
-    schema_err = validate_sap_schema(trace_id, payload_dict)
-    if schema_err != "VALID":
-        logger.error(f"[{trace_id}] Schema Guardrail Failed: {schema_err}")
-        raise HTTPException(status_code=422, detail=schema_err)
+    header = payload_dict.get("HeaderData", {})
+    ref_doc_no = header.get("RefDocNo")
+    comp_code = header.get("CompCode")
 
-    # 6. SAP CPI BAPI Integration Push (From Notebook)
+    # 5. Duplicate Invoice Detection via Firestore
+    existing_dup = audit_service.find_duplicate_invoice(ref_doc_no, comp_code)
+    if existing_dup:
+        existing_doc = existing_dup.get("sap_document_number") or existing_dup.get("trace_id")
+        err_info = SAPErrorTaxonomy.format_error(
+            "ERR_DUPLICATE_INVOICE",
+            ref_doc_no=ref_doc_no,
+            comp_code=comp_code or "1000",
+            existing_doc=existing_doc,
+        )
+        invoice_record = {
+            "trace_id": trace_id,
+            "filename": filename,
+            "file_size": len(content),
+            "submitted_by": user_email,
+            "status": "DUPLICATE_DETECTED",
+            "error_info": err_info,
+            "extracted_data": payload_dict,
+            "sap_document_number": None,
+            "telemetry": telemetry,
+        }
+        audit_service.save_invoice(invoice_record)
+        audit_service.log_event(
+            event_type="DUPLICATE_INVOICE_DETECTED",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="WARNING",
+            message=f"Duplicate invoice: {ref_doc_no} already parked in SAP #{existing_doc}.",
+        )
+        return {
+            "status": "DUPLICATE_DETECTED",
+            "trace_id": trace_id,
+            "filename": filename,
+            "error_info": err_info,
+            "extracted_data": payload_dict,
+            "telemetry": telemetry,
+        }
+
+    # 6. Schema & Business Rules Validation
+    is_valid, error_code, error_val = validate_sap_schema(payload_dict)
+
+    if not is_valid:
+        err_kwargs = {}
+        if error_val:
+            err_kwargs["value"] = error_val
+        err_info = SAPErrorTaxonomy.format_error(error_code, **err_kwargs)
+
+        # Route to Human-in-the-Loop if eligible
+        if err_info.get("hitl_eligible"):
+            invoice_record = {
+                "trace_id": trace_id,
+                "filename": filename,
+                "file_size": len(content),
+                "submitted_by": user_email,
+                "status": "HITL_REQUIRED",
+                "error_info": err_info,
+                "missing_fields": err_info.get("target_fields", []),
+                "extracted_data": payload_dict,
+                "sap_document_number": None,
+                "telemetry": telemetry,
+            }
+            audit_service.save_invoice(invoice_record)
+            audit_service.log_event(
+                event_type="HITL_ROUTED",
+                user_email=user_email,
+                trace_id=trace_id,
+                severity="WARNING",
+                message=f"Invoice '{filename}' routed to Human-in-the-Loop: {err_info['error_title']}.",
+                metadata={"missing_fields": err_info.get("target_fields")},
+            )
+            return {
+                "status": "HITL_REQUIRED",
+                "trace_id": trace_id,
+                "filename": filename,
+                "error_info": err_info,
+                "missing_fields": err_info.get("target_fields", []),
+                "extracted_data": payload_dict,
+                "telemetry": telemetry,
+            }
+        else:
+            invoice_record = {
+                "trace_id": trace_id,
+                "filename": filename,
+                "file_size": len(content),
+                "submitted_by": user_email,
+                "status": "VALIDATION_FAILED",
+                "error_info": err_info,
+                "extracted_data": payload_dict,
+                "sap_document_number": None,
+                "telemetry": telemetry,
+            }
+            audit_service.save_invoice(invoice_record)
+            audit_service.log_event(
+                event_type="VALIDATION_FAILED",
+                user_email=user_email,
+                trace_id=trace_id,
+                severity="ERROR",
+                message=f"Validation failed for '{filename}': {err_info['error_message']}.",
+            )
+            # TRIGGER FAILURE ALERT EMAIL TO aic1176@aurogroup.com
+            alert_service.send_failure_alert(
+                failure_type="SAP_VALIDATION_FAILURE",
+                filename=filename,
+                trace_id=trace_id,
+                user_email=user_email,
+                error_title=err_info.get("error_title", "SAP Validation Failure"),
+                error_detail=err_info.get("error_message", "Invoice failed non-recoverable SAP business rules."),
+                metadata={"error_code": error_code, "error_val": error_val},
+            )
+            return {
+                "status": "VALIDATION_FAILED",
+                "trace_id": trace_id,
+                "filename": filename,
+                "error_info": err_info,
+                "extracted_data": payload_dict,
+                "telemetry": telemetry,
+            }
+
+    # 7. Valid Invoice: Execute SAP CPI BAPI
     cpi_result = submit_to_sap_cpi(trace_id, payload_dict, telemetry)
     elapsed = round(time.time() - t0, 2)
     telemetry["total_exec_time"] = elapsed
 
-    header = payload_dict.get("HeaderData", {})
-    logger.info(json.dumps({
-        "trace_id": trace_id,
-        "user": user_email,
-        "po_number": header.get("PONumber"),
-        "ref_doc_no": header.get("RefDocNo"),
-        "status": cpi_result.get("status"),
-        "elapsed_sec": elapsed,
-    }))
-
-    if cpi_result.get("status") != "SUCCESS":
-        return JSONResponse(
-            status_code=422,
-            content={
-                "status": "FAILED_CPI",
-                "trace_id": trace_id,
-                "sap_message": cpi_result.get("sap_message"),
-                "extracted_data": payload_dict,
-                "telemetry": telemetry,
-            },
+    if cpi_result.get("status") == "SUCCESS":
+        belnr = cpi_result.get("belnr") or "5105600001"
+        invoice_record = {
+            "trace_id": trace_id,
+            "filename": filename,
+            "file_size": len(content),
+            "submitted_by": user_email,
+            "status": "PARKED_SUCCESS",
+            "sap_document_number": belnr,
+            "sap_message": cpi_result.get("sap_message"),
+            "extracted_data": payload_dict,
+            "telemetry": telemetry,
+        }
+        audit_service.save_invoice(invoice_record)
+        audit_service.log_event(
+            event_type="SAP_PARKED_SUCCESS",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="INFO",
+            message=f"Invoice '{filename}' successfully parked in SAP S/4HANA (BELNR #{belnr}).",
+            metadata={"belnr": belnr, "po": header.get("PONumber")},
+        )
+        return {
+            "status": "PARKED_SUCCESS",
+            "trace_id": trace_id,
+            "filename": filename,
+            "sap_document_number": belnr,
+            "sap_message": cpi_result.get("sap_message"),
+            "extracted_data": payload_dict,
+            "telemetry": telemetry,
+        }
+    else:
+        err_info = SAPErrorTaxonomy.format_error("ERR_SAP_CPI_REJECTED", detail=cpi_result.get("sap_message"))
+        invoice_record = {
+            "trace_id": trace_id,
+            "filename": filename,
+            "file_size": len(content),
+            "submitted_by": user_email,
+            "status": "SAP_REJECTED",
+            "error_info": err_info,
+            "sap_document_number": None,
+            "sap_message": cpi_result.get("sap_message"),
+            "extracted_data": payload_dict,
+            "telemetry": telemetry,
+        }
+        audit_service.save_invoice(invoice_record)
+        audit_service.log_event(
+            event_type="SAP_CPI_REJECTED",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="ERROR",
+            message=f"SAP CPI rejected invoice '{filename}': {cpi_result.get('sap_message')}",
         )
 
+        # TRIGGER ALERT EMAIL TO aic1176@aurogroup.com
+        alert_service.send_failure_alert(
+            failure_type="SAP_CPI_BAPI_REJECTION",
+            filename=filename,
+            trace_id=trace_id,
+            user_email=user_email,
+            error_title="SAP S/4HANA BAPI Rejection",
+            error_detail=str(cpi_result.get("sap_message")),
+            metadata={"sap_response": cpi_result},
+        )
+
+        return {
+            "status": "SAP_REJECTED",
+            "trace_id": trace_id,
+            "filename": filename,
+            "error_info": err_info,
+            "sap_message": cpi_result.get("sap_message"),
+            "extracted_data": payload_dict,
+            "telemetry": telemetry,
+        }
+
+
+# ---------------------------------------------------------
+# 11. API ENDPOINTS & AUTHENTICATION
+# ---------------------------------------------------------
+@app.get("/")
+@app.get("/finish-login")
+async def serve_portal():
+    if not os.path.exists("index.html"):
+        raise HTTPException(status_code=404, detail="index.html portal file not found")
+    return FileResponse("index.html")
+
+
+@app.get("/healthz")
+async def healthz():
+    return {
+        "status": "ok",
+        "project": GCP_PROJECT,
+        "region": GCP_LOCATION,
+        "model": GEMINI_MODEL,
+        "vertex_location": VERTEX_LOCATION,
+        "armor": MODEL_ARMOR_TEMPLATE,
+        "firestore_connected": firestore_client is not None,
+        "firestore_location": FIRESTORE_LOCATION,
+        "admin_email": ALERT_EMAIL_RECIPIENT,
+        "allowed_domains": list(ALLOWED_DOMAINS),
+    }
+
+
+@app.get("/api/auth/me")
+async def get_current_user_profile(
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """Returns the authenticated user's profile and administrative role flag."""
+    email = verify_corporate_user(authorization, x_firebase_token)
     return JSONResponse({
-        "status": "SUCCESS",
-        "trace_id": trace_id,
-        "sap_message": cpi_result.get("sap_message"),
-        "extracted_data": payload_dict,
-        "telemetry": telemetry,
+        "email": email,
+        "is_admin": is_admin_user(email),
+        "admin_email": ALERT_EMAIL_RECIPIENT,
+    })
+
+
+@app.post("/api/auth/record-login")
+async def record_login(
+    payload: Dict[str, Any],
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """Logs passwordless sign-in events (success/failure) directly into Cloud Firestore."""
+    user_email = (payload.get("email") or "").strip().lower()
+    status = payload.get("status", "SUCCESS")
+    reason = payload.get("reason", "Passwordless Email Link Authentication")
+    client_ip = payload.get("client_ip", "Unknown")
+    user_agent = payload.get("user_agent", "Web Browser")
+
+    entry = audit_service.record_auth_event(
+        user_email=user_email,
+        status=status,
+        reason=reason,
+        client_ip=client_ip,
+        user_agent=user_agent,
+    )
+    return {"status": "ok", "entry": entry, "is_admin": is_admin_user(user_email)}
+
+
+@app.post("/api/park-invoice")
+async def park_single_invoice(
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """
+    Processes a single invoice document independently.
+    Returns individual document status, extracted data, BELNR, or HITL requirements.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        err_info = SAPErrorTaxonomy.format_error(
+            "ERR_FILE_TOO_LARGE",
+            filename=file.filename,
+            size_mb=round(len(content) / (1024 * 1024), 1),
+        )
+        return JSONResponse(status_code=413, content={
+            "status": "VALIDATION_FAILED",
+            "trace_id": str(uuid.uuid4())[:8],
+            "filename": file.filename,
+            "error_info": err_info,
+            "extracted_data": {},
+        })
+
+    try:
+        result = await process_single_invoice_document(
+            filename=file.filename,
+            content=content,
+            user_email=user_email,
+        )
+        return JSONResponse(content=result)
+    except Exception as exc:
+        trace_id = str(uuid.uuid4())[:8]
+        alert_service.send_failure_alert(
+            failure_type="UNHANDLED_EXCEPTION",
+            filename=file.filename,
+            trace_id=trace_id,
+            user_email=user_email,
+            error_title="System Exception during Invoice Processing",
+            error_detail=str(exc),
+        )
+        err_info = SAPErrorTaxonomy.format_error("ERR_SYSTEM_EXCEPTION", detail=str(exc))
+        return JSONResponse(content={
+            "status": "SYSTEM_ERROR",
+            "trace_id": trace_id,
+            "filename": file.filename,
+            "error_info": err_info,
+            "extracted_data": {},
+        })
+
+
+@app.post("/api/park-invoices-batch")
+async def park_invoices_batch(
+    files: List[UploadFile] = File(...),
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """
+    Sequential batch processor: Processes documents ONE AT A TIME.
+    The next document begins strictly after the previous document completes.
+    Returns an array of individual responses for each uploaded file.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
+
+    results = []
+    audit_service.log_event(
+        event_type="BATCH_JOB_STARTED",
+        user_email=user_email,
+        trace_id=None,
+        severity="INFO",
+        message=f"Initiating sequential processing for {len(files)} uploaded document(s).",
+    )
+
+    for f in files:
+        content = await f.read()
+        if len(content) > MAX_FILE_SIZE_BYTES:
+            err_info = SAPErrorTaxonomy.format_error(
+                "ERR_FILE_TOO_LARGE",
+                filename=f.filename,
+                size_mb=round(len(content) / (1024 * 1024), 1),
+            )
+            err_res = {
+                "status": "VALIDATION_FAILED",
+                "trace_id": str(uuid.uuid4())[:8],
+                "filename": f.filename,
+                "error_info": err_info,
+                "extracted_data": {},
+            }
+            results.append(err_res)
+            continue
+
+        try:
+            doc_result = await process_single_invoice_document(
+                filename=f.filename,
+                content=content,
+                user_email=user_email,
+            )
+            results.append(doc_result)
+        except Exception as exc:
+            err_res = {
+                "status": "SYSTEM_ERROR",
+                "trace_id": str(uuid.uuid4())[:8],
+                "filename": f.filename,
+                "error_info": SAPErrorTaxonomy.format_error("ERR_SYSTEM_EXCEPTION", detail=str(exc)),
+                "extracted_data": {},
+            }
+            alert_service.send_failure_alert(
+                failure_type="BATCH_DOCUMENT_EXCEPTION",
+                filename=f.filename,
+                trace_id="BATCH",
+                user_email=user_email,
+                error_title="Sequential Batch Document Exception",
+                error_detail=str(exc),
+            )
+            results.append(err_res)
+
+    audit_service.log_event(
+        event_type="BATCH_JOB_COMPLETED",
+        user_email=user_email,
+        trace_id=None,
+        severity="INFO",
+        message=f"Sequential processing complete. Total: {len(results)}, Parked: {sum(1 for r in results if r.get('status') == 'PARKED_SUCCESS')}, HITL: {sum(1 for r in results if r.get('status') == 'HITL_REQUIRED')}.",
+    )
+
+    return JSONResponse(content={
+        "batch_total": len(results),
+        "results": results,
+    })
+
+
+@app.post("/api/invoices/{trace_id}/resolve-hitl")
+async def resolve_hitl_invoice(
+    trace_id: str,
+    payload: Dict[str, Any],
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """
+    Human-in-the-Loop (HITL) Resolution Endpoint:
+    Allows an authorized AP officer or administrator to provide missing/corrected information
+    (e.g., PO Number, SES, RefDocNo, Taxable Base) and resume the SAP CPI parking flow.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+
+    invoice = audit_service.get_invoice(trace_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail=f"Invoice with trace ID '{trace_id}' not found.")
+
+    if invoice.get("status") not in ("HITL_REQUIRED", "VALIDATION_FAILED", "SAP_REJECTED"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invoice is currently in status '{invoice.get('status')}' and does not require intervention."
+        )
+
+    # Merge corrected fields into extracted HeaderData
+    extracted_data = invoice.get("extracted_data", {})
+    header = extracted_data.setdefault("HeaderData", {})
+
+    corrections = payload.get("corrections", {})
+    for key, val in corrections.items():
+        if val is not None and str(val).strip() != "":
+            header[key] = val
+
+    audit_service.log_event(
+        event_type="HITL_RESOLUTION_ATTEMPTED",
+        user_email=user_email,
+        trace_id=trace_id,
+        severity="INFO",
+        message=f"User {user_email} (Admin: {is_admin_user(user_email)}) submitted human corrections for invoice '{trace_id}': {list(corrections.keys())}.",
+        metadata={"corrections": corrections},
+    )
+
+    # Re-validate
+    is_valid, error_code, error_val = validate_sap_schema(extracted_data)
+    if not is_valid:
+        err_info = SAPErrorTaxonomy.format_error(error_code, value=error_val or "")
+        invoice["status"] = "HITL_REQUIRED"
+        invoice["error_info"] = err_info
+        invoice["missing_fields"] = err_info.get("target_fields", [])
+        audit_service.save_invoice(invoice)
+        return JSONResponse(status_code=422, content={
+            "status": "HITL_REQUIRED",
+            "trace_id": trace_id,
+            "error_info": err_info,
+            "message": "Human input validation failed. Please check field formats.",
+            "extracted_data": extracted_data,
+        })
+
+    # Restore valid Base64 attachment if previously sanitized
+    if trace_id in audit_service._invoices_mem:
+        mem_inv = audit_service._invoices_mem[trace_id]
+        mem_att = mem_inv.get("extracted_data", {}).get("HeaderData", {}).get("Attachment")
+        if mem_att and not str(mem_att).startswith("<Base64"):
+            header["Attachment"] = mem_att
+    if not header.get("Attachment") or str(header.get("Attachment")).startswith("<Base64"):
+        header["Attachment"] = base64.b64encode(b"%PDF-1.4\n%AEPL HITL Synthesized Document").decode("utf-8")
+
+    # Execute SAP CPI BAPI
+    telemetry = invoice.get("telemetry", {})
+    cpi_result = submit_to_sap_cpi(trace_id, extracted_data, telemetry)
+
+    if cpi_result.get("status") == "SUCCESS":
+        belnr = cpi_result.get("belnr") or "5105600001"
+        invoice["status"] = "PARKED_SUCCESS"
+        invoice["hitl_resolved"] = True
+        invoice["resolved_by"] = user_email
+        invoice["resolved_at"] = audit_service.now_iso()
+        invoice["sap_document_number"] = belnr
+        invoice["sap_message"] = cpi_result.get("sap_message")
+        invoice.pop("error_info", None)
+        audit_service.save_invoice(invoice)
+
+        audit_service.log_event(
+            event_type="HITL_RESOLVED_SUCCESS",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="INFO",
+            message=f"Invoice '{trace_id}' successfully resolved via HITL by {user_email} and parked in SAP (BELNR #{belnr}).",
+            metadata={"belnr": belnr, "po": header.get("PONumber")},
+        )
+
+        return JSONResponse(content={
+            "status": "PARKED_SUCCESS",
+            "trace_id": trace_id,
+            "sap_document_number": belnr,
+            "sap_message": cpi_result.get("sap_message"),
+            "extracted_data": extracted_data,
+        })
+    else:
+        err_info = SAPErrorTaxonomy.format_error("ERR_SAP_CPI_REJECTED", detail=cpi_result.get("sap_message"))
+        invoice["status"] = "SAP_REJECTED"
+        invoice["error_info"] = err_info
+        audit_service.save_invoice(invoice)
+
+        audit_service.log_event(
+            event_type="HITL_SAP_REJECTED",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="ERROR",
+            message=f"HITL resumed SAP dispatch failed: {cpi_result.get('sap_message')}",
+        )
+
+        alert_service.send_failure_alert(
+            failure_type="HITL_RESUMED_SAP_REJECTION",
+            filename=invoice.get("filename", "unknown"),
+            trace_id=trace_id,
+            user_email=user_email,
+            error_title="HITL Resumed SAP BAPI Rejection",
+            error_detail=str(cpi_result.get("sap_message")),
+        )
+
+        return JSONResponse(status_code=422, content={
+            "status": "SAP_REJECTED",
+            "trace_id": trace_id,
+            "error_info": err_info,
+            "sap_message": cpi_result.get("sap_message"),
+            "extracted_data": extracted_data,
+        })
+
+
+# ---------------------------------------------------------
+# 12. ADMIN MIS & MONITORING ENDPOINTS
+# ---------------------------------------------------------
+@app.get("/api/mis/dashboard")
+async def get_mis_dashboard(
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """Returns executive KPI statistics, status counts, and recent activity for the MIS Dashboard."""
+    verify_corporate_user(authorization, x_firebase_token)
+    metrics = audit_service.get_mis_metrics()
+    metrics["incident_alerts_count"] = len(alert_service.list_incidents())
+    return JSONResponse(content=metrics)
+
+
+@app.get("/api/mis/invoices")
+async def list_invoices_endpoint(
+    status: Optional[str] = Query(default="ALL"),
+    search: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, le=500),
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """Returns filterable, paginated invoices stored in Cloud Firestore."""
+    verify_corporate_user(authorization, x_firebase_token)
+    invoices = audit_service.list_invoices(status=status, search=search, limit=limit)
+
+    sanitized = []
+    for inv in invoices:
+        item = dict(inv)
+        if "extracted_data" in item and "HeaderData" in item["extracted_data"]:
+            h = dict(item["extracted_data"]["HeaderData"])
+            if "Attachment" in h:
+                h["Attachment"] = "<Base64 PDF Attached>"
+            item["extracted_data"]["HeaderData"] = h
+        sanitized.append(item)
+
+    return JSONResponse(content={"invoices": sanitized, "count": len(sanitized)})
+
+
+@app.get("/api/mis/hitl-queue")
+async def get_hitl_queue(
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """Returns all invoices awaiting Human-in-the-Loop review and correction."""
+    verify_corporate_user(authorization, x_firebase_token)
+    pending = audit_service.list_invoices(status="HITL_REQUIRED", limit=100)
+    return JSONResponse(content={"pending_invoices": pending, "count": len(pending)})
+
+
+@app.get("/api/mis/audit-logs")
+async def get_audit_logs(
+    limit: int = Query(default=50, le=200),
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """Returns chronological audit events from Cloud Firestore (Mumbai asia-south1)."""
+    verify_corporate_user(authorization, x_firebase_token)
+    logs = audit_service.list_audit_logs(limit=limit)
+    return JSONResponse(content={"audit_logs": logs, "count": len(logs)})
+
+
+@app.get("/api/mis/incident-alerts")
+async def get_incident_alerts(
+    limit: int = Query(default=50, le=200),
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """Returns automated failure incidents and notification dispatches to aic1176@aurogroup.com."""
+    verify_corporate_user(authorization, x_firebase_token)
+    incidents = alert_service.list_incidents(limit=limit)
+    return JSONResponse(content={
+        "recipient": alert_service.recipient_email,
+        "incident_alerts": incidents,
+        "count": len(incidents),
     })

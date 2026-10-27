@@ -6,6 +6,7 @@ httpx==0.28.1
 pydantic==2.10.6
 google-genai==1.2.0
 google-cloud-modelarmor>=0.2.0
+google-cloud-firestore>=2.19.0
 firebase-admin==6.6.0
 pymupdf==1.25.3
 Pillow==11.1.0
