@@ -6,12 +6,9 @@ import logging
 import os
 import random
 import re
-import smtplib
 import time
 import uuid
 from datetime import datetime, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from typing import Any, Dict, List, Optional, Tuple
 
 import firebase_admin
@@ -112,26 +109,33 @@ def is_admin_user(email: str) -> bool:
 
 
 # ---------------------------------------------------------
-# 2. FAILURE ALERT NOTIFICATION SERVICE (To aic1176@aurogroup.com)
+# 2. FAILURE ALERT NOTIFICATION SERVICE (Firebase Extension: firestore-send-email)
 # ---------------------------------------------------------
 class AlertNotificationService:
     """
     Automated Failure Incident Alerting Service.
-    Sends instant email alerts to administrator (aic1176@aurogroup.com) on:
+    Integrates directly with the Official Firebase Extension: 'Trigger Email from Firestore' (firestore-send-email).
+    Reference: https://firebase.google.com/docs/extensions/official/firestore-send-email
+
+    Sends automated failure alerts to administrator (aic1176@aurogroup.com) on:
     - Model extraction failures (Gemini inference crash / timeout)
     - Model Armor security blocks (adversarial prompt injection / malicious URI)
     - SAP CPI BAPI rejections or network disconnects
     - System unhandled exceptions
-    Persists all incident alerts into Cloud Firestore collection 'incident_alerts'.
+
+    Delivery Architecture:
+    1. Writes directly to Cloud Firestore 'mail' collection (Mumbai asia-south1).
+       This natively triggers the official 'firestore-send-email' extension,
+       which delivers the email via the configured provider (Google Workspace OAuth2,
+       Brevo, Mailgun, Postmark, MailerSend, or AWS SES).
+    2. Writes incident metadata to Cloud Firestore 'incident_alerts' collection for the Admin MIS Dashboard.
     """
     def __init__(self, db):
         self.db = db
         self.recipient_email = ALERT_EMAIL_RECIPIENT
-        self.smtp_host = os.getenv("SMTP_HOST", "").strip()
-        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
-        self.smtp_user = os.getenv("SMTP_USER", "").strip()
-        self.smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
-        self.sender_email = os.getenv("ALERT_SENDER_EMAIL", "sap-alerts@aurogroup.com").strip()
+        self.sender_email = os.getenv("ALERT_SENDER_EMAIL", self.recipient_email).strip()
+        self.mail_collection = os.getenv("MAIL_COLLECTION", "mail").strip()
+        self.webhook_url = os.getenv("ALERT_WEBHOOK_URL", "").strip()
         self._incidents_mem: List[Dict[str, Any]] = []
 
     def send_failure_alert(
@@ -146,6 +150,43 @@ class AlertNotificationService:
     ) -> Dict[str, Any]:
         now_iso = datetime.now(timezone.utc).isoformat()
         incident_id = f"inc_{str(uuid.uuid4())[:8]}"
+        subject = f"[SAP AP FAILURE ALERT] {error_title} - {filename} ({trace_id})"
+        plain_text = (
+            f"SAP S/4HANA Invoice Automation — Failure Incident Alert\n"
+            f"Incident ID: {incident_id}\n"
+            f"Failure Type: {failure_type}\n"
+            f"Document: {filename}\n"
+            f"Trace ID: {trace_id}\n"
+            f"Submitted By: {user_email}\n"
+            f"Timestamp (UTC): {now_iso}\n"
+            f"Error: {error_title} - {error_detail}\n"
+            f"Action Required: Check Admin MIS Dashboard as {self.recipient_email}."
+        )
+
+        html_body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; color: #1e293b; line-height: 1.5; padding: 20px;">
+            <div style="background-color: #b91c1c; color: #ffffff; padding: 14px 20px; border-radius: 6px; font-size: 18px; font-weight: bold;">
+                SAP S/4HANA Invoice Automation — Failure Incident Alert
+            </div>
+            <div style="padding: 20px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 6px 6px; background-color: #fafbfc;">
+                <p style="font-size: 14px; margin-top: 0;">An automated invoice processing failure has occurred requiring administrative attention.</p>
+                <table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
+                    <tr><td style="padding: 6px 0; font-weight: bold; width: 160px;">Incident ID:</td><td>{incident_id}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Failure Type:</td><td style="color: #b91c1c; font-weight: bold;">{failure_type}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Document File:</td><td>{filename}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Trace ID:</td><td><code>{trace_id}</code></td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Submitted By:</td><td>{user_email}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Timestamp (UTC):</td><td>{now_iso}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold; vertical-align: top;">Error Summary:</td><td><strong>{error_title}</strong><br><span style="color: #64748b;">{error_detail}</span></td></tr>
+                </table>
+                <div style="margin-top: 20px; padding: 12px; background-color: #fee2e2; border-left: 4px solid #b91c1c; font-size: 13px;">
+                    <strong>Action Required:</strong> Log in to the Admin MIS Dashboard as <code>{self.recipient_email}</code> to inspect telemetry or route this invoice through the Human-in-the-Loop queue.
+                </div>
+            </div>
+        </body>
+        </html>
+        """
 
         incident = {
             "incident_id": incident_id,
@@ -167,55 +208,58 @@ class AlertNotificationService:
             f"Type: {failure_type} | File: {filename} | Error: {error_title} - {error_detail}"
         )
 
-        # 1. Attempt Live Email Dispatch via SMTP if credentials are provided in env
-        if self.smtp_host and self.smtp_user and self.smtp_password:
+        # Direct Webhook Dispatch (e.g. Microsoft Power Automate HTTP Trigger, Teams, Slack)
+        if self.webhook_url:
             try:
-                msg = MIMEMultipart("alternative")
-                msg["Subject"] = f"[SAP AP FAILURE ALERT] {error_title} - {filename} ({trace_id})"
-                msg["From"] = self.sender_email
-                msg["To"] = self.recipient_email
+                wh_payload = {
+                    "incident_id": incident_id,
+                    "recipient": self.recipient_email,
+                    "subject": subject,
+                    "html": html_body,
+                    "text": plain_text,
+                    "failure_type": failure_type,
+                    "filename": filename,
+                    "trace_id": trace_id,
+                    "timestamp": now_iso,
+                    "submitted_by": user_email,
+                    "error_title": error_title,
+                    "error_detail": error_detail,
+                }
+                wh_res = requests.post(self.webhook_url, json=wh_payload, timeout=8)
+                if wh_res.status_code in (200, 201, 202):
+                    incident["email_status"] = f"DISPATCHED_WEBHOOK_TO_{self.recipient_email}"
+                    logger.info(f"Alert delivered via Webhook to {self.recipient_email}.")
+                else:
+                    logger.warning(f"Webhook notice ({wh_res.status_code}): {wh_res.text[:200]}")
+            except Exception as wh_exc:
+                logger.warning(f"Webhook delivery notice: {wh_exc}")
 
-                html_body = f"""
-                <html>
-                <body style="font-family: Arial, sans-serif; color: #1e293b; line-height: 1.5; padding: 20px;">
-                    <div style="background-color: #b91c1c; color: #ffffff; padding: 14px 20px; border-radius: 6px; font-size: 18px; font-weight: bold;">
-                        SAP S/4HANA Invoice Automation — Failure Incident Alert
-                    </div>
-                    <div style="padding: 20px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 6px 6px; background-color: #fafbfc;">
-                        <p style="font-size: 14px; margin-top: 0;">An automated invoice processing failure has occurred requiring administrative attention.</p>
-                        <table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
-                            <tr><td style="padding: 6px 0; font-weight: bold; width: 160px;">Incident ID:</td><td>{incident_id}</td></tr>
-                            <tr><td style="padding: 6px 0; font-weight: bold;">Failure Type:</td><td style="color: #b91c1c; font-weight: bold;">{failure_type}</td></tr>
-                            <tr><td style="padding: 6px 0; font-weight: bold;">Document File:</td><td>{filename}</td></tr>
-                            <tr><td style="padding: 6px 0; font-weight: bold;">Trace ID:</td><td><code>{trace_id}</code></td></tr>
-                            <tr><td style="padding: 6px 0; font-weight: bold;">Submitted By:</td><td>{user_email}</td></tr>
-                            <tr><td style="padding: 6px 0; font-weight: bold;">Timestamp (UTC):</td><td>{now_iso}</td></tr>
-                            <tr><td style="padding: 6px 0; font-weight: bold; vertical-align: top;">Error Summary:</td><td><strong>{error_title}</strong><br><span style="color: #64748b;">{error_detail}</span></td></tr>
-                        </table>
-                        <div style="margin-top: 20px; padding: 12px; background-color: #fee2e2; border-left: 4px solid #b91c1c; font-size: 13px;">
-                            <strong>Action Required:</strong> Log in to the Admin MIS Dashboard as <code>{self.recipient_email}</code> to inspect telemetry or route this invoice through the Human-in-the-Loop queue.
-                        </div>
-                    </div>
-                </body>
-                </html>
-                """
-                msg.attach(MIMEText(html_body, "html"))
-
-                with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=10) as server:
-                    server.starttls()
-                    server.login(self.smtp_user, self.smtp_password)
-                    server.sendmail(self.sender_email, [self.recipient_email], msg.as_string())
-
-                incident["email_status"] = f"DISPATCHED_TO_{self.recipient_email}"
-                logger.info(f"Alert email successfully delivered via SMTP to {self.recipient_email}.")
+        # Official Firebase Extension 'firestore-send-email' Schema Contract
+        # Triggered automatically when document is added to 'mail' collection in Firestore
+        if self.db:
+            try:
+                mail_doc = {
+                    "to": [self.recipient_email],
+                    "from": self.sender_email,
+                    "replyTo": self.sender_email,
+                    "message": {
+                        "subject": subject,
+                        "text": plain_text,
+                        "html": html_body,
+                    },
+                    "incident_id": incident_id,
+                    "failure_type": failure_type,
+                    "filename": filename,
+                    "trace_id": trace_id,
+                    "timestamp": now_iso,
+                }
+                self.db.collection(self.mail_collection).document(incident_id).set(mail_doc)
+                incident["email_status"] = f"QUEUED_IN_FIRESTORE_{self.mail_collection.upper()}"
+                logger.info(f"Alert written to Firestore '{self.mail_collection}' collection for firestore-send-email extension.")
             except Exception as mail_exc:
-                incident["email_status"] = f"SMTP_ERROR_{mail_exc}"
-                logger.warning(f"SMTP alert delivery notice: {mail_exc}")
-        else:
-            incident["email_status"] = f"RECORDED_FOR_ADMIN_{self.recipient_email}"
-            logger.info(f"Incident {incident_id} recorded in Firestore for admin notification ({self.recipient_email}).")
+                logger.warning(f"Firestore '{self.mail_collection}' write notice: {mail_exc}")
 
-        # 2. Persist Incident Alert to Cloud Firestore (Mumbai asia-south1)
+        # Persist Incident Alert to Cloud Firestore 'incident_alerts' (Mumbai asia-south1)
         if self.db:
             try:
                 self.db.collection("incident_alerts").document(incident_id).set(incident)
@@ -1338,7 +1382,7 @@ async def process_single_invoice_document(
                 message=f"Validation failed for '{filename}': {err_info['error_message']}.",
             )
             # TRIGGER FAILURE ALERT EMAIL TO aic1176@aurogroup.com
-            alert_service.send_failure_alert(
+            alert_incident = alert_service.send_failure_alert(
                 failure_type="SAP_VALIDATION_FAILURE",
                 filename=filename,
                 trace_id=trace_id,
@@ -1354,6 +1398,12 @@ async def process_single_invoice_document(
                 "error_info": err_info,
                 "extracted_data": payload_dict,
                 "telemetry": telemetry,
+                "alert_notification": {
+                    "incident_id": alert_incident.get("incident_id"),
+                    "status": alert_incident.get("email_status"),
+                    "recipient": alert_incident.get("recipient"),
+                    "timestamp": alert_incident.get("timestamp"),
+                },
             }
 
     # 7. Valid Invoice: Execute SAP CPI BAPI
@@ -1416,7 +1466,7 @@ async def process_single_invoice_document(
         )
 
         # TRIGGER ALERT EMAIL TO aic1176@aurogroup.com
-        alert_service.send_failure_alert(
+        alert_incident = alert_service.send_failure_alert(
             failure_type="SAP_CPI_BAPI_REJECTION",
             filename=filename,
             trace_id=trace_id,
@@ -1434,6 +1484,12 @@ async def process_single_invoice_document(
             "sap_message": cpi_result.get("sap_message"),
             "extracted_data": payload_dict,
             "telemetry": telemetry,
+            "alert_notification": {
+                "incident_id": alert_incident.get("incident_id"),
+                "status": alert_incident.get("email_status"),
+                "recipient": alert_incident.get("recipient"),
+                "timestamp": alert_incident.get("timestamp"),
+            },
         }
 
 
@@ -1668,6 +1724,11 @@ async def resolve_hitl_invoice(
     corrections = payload.get("corrections", {})
     for key, val in corrections.items():
         if val is not None and str(val).strip() != "":
+            # Normalize date to DD.MM.YYYY if needed for SAP ABAP
+            if key == "DocDate" and isinstance(val, str) and "-" in val:
+                parts = val.strip().split("-")
+                if len(parts) == 3 and len(parts[0]) == 4:
+                    val = f"{parts[2]}.{parts[1]}.{parts[0]}"
             header[key] = val
 
     audit_service.log_event(
@@ -1749,7 +1810,7 @@ async def resolve_hitl_invoice(
             message=f"HITL resumed SAP dispatch failed: {cpi_result.get('sap_message')}",
         )
 
-        alert_service.send_failure_alert(
+        alert_incident = alert_service.send_failure_alert(
             failure_type="HITL_RESUMED_SAP_REJECTION",
             filename=invoice.get("filename", "unknown"),
             trace_id=trace_id,
@@ -1764,6 +1825,12 @@ async def resolve_hitl_invoice(
             "error_info": err_info,
             "sap_message": cpi_result.get("sap_message"),
             "extracted_data": extracted_data,
+            "alert_notification": {
+                "incident_id": alert_incident.get("incident_id"),
+                "status": alert_incident.get("email_status"),
+                "recipient": alert_incident.get("recipient"),
+                "timestamp": alert_incident.get("timestamp"),
+            },
         })
 
 
@@ -1812,10 +1879,22 @@ async def get_hitl_queue(
     authorization: Optional[str] = Header(default=None),
     x_firebase_token: Optional[str] = Header(default=None),
 ):
-    """Returns all invoices awaiting Human-in-the-Loop review and correction."""
+    """Returns all invoices awaiting Human-in-the-Loop review and correction (HITL_REQUIRED or SAP_REJECTED)."""
     verify_corporate_user(authorization, x_firebase_token)
-    pending = audit_service.list_invoices(status="HITL_REQUIRED", limit=100)
-    return JSONResponse(content={"pending_invoices": pending, "count": len(pending)})
+    all_inv = audit_service.list_invoices(limit=200)
+    pending = [i for i in all_inv if i.get("status") in ("HITL_REQUIRED", "SAP_REJECTED")]
+
+    sanitized = []
+    for inv in pending:
+        item = dict(inv)
+        if "extracted_data" in item and "HeaderData" in item["extracted_data"]:
+            h = dict(item["extracted_data"]["HeaderData"])
+            if "Attachment" in h:
+                h["Attachment"] = "<Base64 PDF Attached>"
+            item["extracted_data"]["HeaderData"] = h
+        sanitized.append(item)
+
+    return JSONResponse(content={"pending_invoices": sanitized, "count": len(sanitized)})
 
 
 @app.get("/api/mis/audit-logs")
@@ -1841,6 +1920,37 @@ async def get_incident_alerts(
     incidents = alert_service.list_incidents(limit=limit)
     return JSONResponse(content={
         "recipient": alert_service.recipient_email,
+        "alerts": incidents,
         "incident_alerts": incidents,
         "count": len(incidents),
+    })
+
+
+@app.post("/api/alerts/test")
+async def test_alert_notification(
+    recipient: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """Sends a test failure alert email to verify the notification pipeline."""
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+    target = recipient or alert_service.recipient_email
+    test_incident = alert_service.send_failure_alert(
+        failure_type="TEST_DIAGNOSTIC_ALERT",
+        filename="system_health_check.pdf",
+        trace_id=f"test_{str(uuid.uuid4())[:6]}",
+        user_email=user_email,
+        error_title="Diagnostic Failure Alert Test",
+        error_detail="This is a test notification confirming automated failure alerting dispatch to administrator.",
+    )
+    return JSONResponse(content={
+        "status": "PROCESSED",
+        "incident": test_incident,
+        "active_transports": {
+            "webhook_configured": bool(alert_service.webhook_url),
+            "extension": "firestore-send-email (Official Firebase Extension)",
+            "firestore_collection": alert_service.mail_collection,
+            "firebase_connected": bool(alert_service.db is not None),
+            "recipient": target,
+        }
     })

@@ -555,6 +555,7 @@
     .doc-result-card.success { border-color: var(--success-border); }
     .doc-result-card.hitl { border-color: var(--warning-border); }
     .doc-result-card.duplicate { border-color: var(--info-border); }
+    .doc-result-card.sap-rejected { border-color: #fdba74; box-shadow: 0 2px 8px rgba(249, 115, 22, 0.08); }
     .doc-result-card.error { border-color: var(--danger-border); }
 
     .doc-card-header {
@@ -778,6 +779,57 @@
       color: #991b1b;
       margin-top: 6px;
       font-style: italic;
+    }
+
+    /* SAP Rejection Notice Box */
+    .sap-rejected-box {
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      border-radius: var(--radius-md);
+      padding: 18px 22px;
+      margin-bottom: 16px;
+    }
+    .sap-rejected-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #9a3412;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .sap-rejected-msg {
+      font-size: 13px;
+      color: #c2410c;
+      line-height: 1.5;
+      margin-bottom: 12px;
+      background: #ffedd5;
+      padding: 12px 16px;
+      border-radius: 6px;
+      border-left: 4px solid #ea580c;
+      font-family: var(--font-mono);
+      word-break: break-word;
+    }
+    .sap-rejected-hint {
+      font-size: 12px;
+      color: #7c2d12;
+      margin-bottom: 12px;
+      line-height: 1.5;
+    }
+
+    /* Alert Dispatched Status Banner */
+    .alert-dispatched-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      padding: 9px 14px;
+      font-size: 12px;
+      color: #1e40af;
+      margin-top: 10px;
+      margin-bottom: 14px;
     }
 
     /* Duplicate Notice Box */
@@ -1168,6 +1220,11 @@
             <div class="kpi-value" id="kpiHITL" style="color:var(--warning);">0</div>
             <div class="kpi-sub">Awaiting human review</div>
           </div>
+          <div class="kpi-card" style="border-left: 3px solid #f97316;">
+            <div class="kpi-label">SAP Rejections</div>
+            <div class="kpi-value" id="kpiSapRejected" style="color:#c2410c;">0</div>
+            <div class="kpi-sub">Posting period / BAPI errors</div>
+          </div>
           <div class="kpi-card" style="border-left: 3px solid var(--danger);">
             <div class="kpi-label">Validation Failed</div>
             <div class="kpi-value" id="kpiValidation" style="color:var(--danger);">0</div>
@@ -1209,6 +1266,7 @@
             <button class="status-filter-pill active" onclick="filterMISByStatus('ALL', this)">All</button>
             <button class="status-filter-pill" onclick="filterMISByStatus('PARKED_SUCCESS', this)">Parked</button>
             <button class="status-filter-pill" onclick="filterMISByStatus('HITL_REQUIRED', this)">HITL Pending</button>
+            <button class="status-filter-pill" onclick="filterMISByStatus('SAP_REJECTED', this)">SAP Rejected</button>
             <button class="status-filter-pill" onclick="filterMISByStatus('DUPLICATE_DETECTED', this)">Duplicates</button>
             <button class="status-filter-pill" onclick="filterMISByStatus('VALIDATION_FAILED', this)">Failed</button>
           </div>
@@ -1270,7 +1328,16 @@
             <span style="background:var(--danger-light); color:var(--danger); border:1px solid var(--danger-border); padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700;">ALERT DISPATCH</span>
             <span>Failure Incident Alerts (Dispatched to aic1176@aurogroup.com)</span>
           </h2>
-          <span style="font-size:12px; color:var(--slate-500);">Live SMTP &amp; Mumbai Firestore Incident Store</span>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <button class="btn-secondary" onclick="sendTestFailureAlert()" style="font-size:11px; padding:4px 10px; font-weight:600;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+              <span>Send Test Alert</span>
+            </button>
+            <span style="font-size:12px; color:var(--slate-500);">Firestore Trigger Email (firestore-send-email) &amp; Mumbai Firestore Store</span>
+          </div>
         </div>
         <div class="table-responsive" style="margin-top:12px;">
           <table class="invoice-table">
@@ -1654,11 +1721,21 @@
           const result = await response.json();
 
           if (!result.status) {
-            result.status = "VALIDATION_FAILED";
+            let errorMsg = "Document could not be processed by server.";
+            if (typeof result.detail === "string") {
+              errorMsg = result.detail;
+            } else if (Array.isArray(result.detail)) {
+              errorMsg = result.detail.map(d => (d.msg || d.message || JSON.stringify(d))).join("; ");
+            } else if (result.detail && typeof result.detail === "object") {
+              errorMsg = result.detail.error || result.detail.message || JSON.stringify(result.detail);
+            } else if (result.message) {
+              errorMsg = result.message;
+            }
+            result.status = "SYSTEM_ERROR";
             result.error_info = {
-              error_title: "Document Rejected (" + response.status + ")",
-              error_message: result.detail || "Document could not be processed by server.",
-              resolution_hint: "Ensure file is under 10 MB and is a valid PDF, JPG, PNG, or TIFF."
+              error_title: "Extraction / Ingestion Notice (" + response.status + ")",
+              error_message: errorMsg,
+              resolution_hint: "Verify file is under 10 MB and is a supported PDF/Image format."
             };
           }
 
@@ -1672,19 +1749,33 @@
               trayTag.style.background = "var(--success-light)";
               trayTag.style.color = "var(--success)";
               parkedCount++;
+              showToast(`[${i+1}/${selectedFiles.length}] ${f.name}: Parked successfully in SAP (Doc #${result.sap_document_number || 'BELNR'})`);
             } else if (result.status === "HITL_REQUIRED") {
               trayTag.innerText = "Action Required ⚠";
               trayTag.style.background = "var(--warning-light)";
               trayTag.style.color = "var(--warning)";
               hitlCount++;
+              showToast(`[${i+1}/${selectedFiles.length}] ${f.name}: Missing PO or SES - Review Required`);
+            } else if (result.status === "SAP_REJECTED") {
+              trayTag.innerText = "SAP Rejected ⚠";
+              trayTag.style.background = "#ffedd5";
+              trayTag.style.color = "#c2410c";
+              showToast(`[${i+1}/${selectedFiles.length}] ${f.name}: SAP S/4HANA BAPI Rejected`);
             } else if (result.status === "DUPLICATE_DETECTED") {
               trayTag.innerText = "Duplicate ℹ";
               trayTag.style.background = "var(--info-light)";
               trayTag.style.color = "#0369a1";
+              showToast(`[${i+1}/${selectedFiles.length}] ${f.name}: Duplicate Invoice Detected`);
+            } else if (result.status === "SECURITY_BLOCKED") {
+              trayTag.innerText = "Blocked 🛡";
+              trayTag.style.background = "#fee2e2";
+              trayTag.style.color = "#b91c1c";
+              showToast(`[${i+1}/${selectedFiles.length}] ${f.name}: Model Armor Security Intercept`);
             } else {
               trayTag.innerText = "Failed ✕";
               trayTag.style.background = "var(--danger-light)";
               trayTag.style.color = "var(--danger)";
+              showToast(`[${i+1}/${selectedFiles.length}] ${f.name}: Processing Failed`);
             }
           }
 
@@ -1732,6 +1823,9 @@
       } else if (data.status === "HITL_REQUIRED") {
         cardClass = "hitl";
         statusPill = `<span style="background:var(--warning-light); color:var(--warning); border:1px solid var(--warning-border); font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">SELF-SERVICE REVIEW (HITL)</span>`;
+      } else if (data.status === "SAP_REJECTED") {
+        cardClass = "sap-rejected";
+        statusPill = `<span style="background:#fff7ed; color:#c2410c; border:1px solid #fdba74; font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">SAP BAPI REJECTED</span>`;
       } else if (data.status === "DUPLICATE_DETECTED") {
         cardClass = "duplicate";
         statusPill = `<span style="background:var(--info-light); color:#0369a1; border:1px solid var(--info-border); font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">DUPLICATE DETECTED</span>`;
@@ -1972,6 +2066,26 @@
                     required
                   />
                 </div>
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Document Date (BLDAT)</label>
+                  <input
+                    type="text"
+                    id="hitl_date_${traceId}"
+                    class="hitl-input"
+                    placeholder="YYYY-MM-DD or DD.MM.YYYY"
+                    value="${header.DocDate || ''}"
+                  />
+                </div>
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Delivery Note (optional)</label>
+                  <input
+                    type="text"
+                    id="hitl_deliv_${traceId}"
+                    class="hitl-input"
+                    placeholder="DN-xxxx"
+                    value="${header.DeliveryNote || ''}"
+                  />
+                </div>
               </div>
 
               <div style="margin-top:14px; display:flex; gap:10px;">
@@ -1981,6 +2095,191 @@
                     <line x1="5" y1="12" x2="19" y2="12"></line>
                     <polyline points="12 5 19 12 12 19"></polyline>
                   </svg>
+                </button>
+              </div>
+            </form>
+          </div>
+        `;
+      }
+
+      // 3. SAP S/4HANA BAPI Business Rejection
+      else if (data.status === "SAP_REJECTED") {
+        const err = data.error_info || {};
+        const ext = data.extracted_data || {};
+        const header = ext.HeaderData || {};
+        const sapMsg = data.sap_message || err.error_message || "SAP Business Error: Rejected by S/4HANA BAPI.";
+        const alertIncident = data.alert_notification || {};
+
+        innerHTML += `
+          <div class="sap-rejected-box">
+            <div class="sap-rejected-title">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ea580c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+              <span>SAP S/4HANA BAPI Business Rejection</span>
+            </div>
+            <div class="sap-rejected-msg">${sapMsg}</div>
+            <div class="sap-rejected-hint">
+              <strong>Root Cause &amp; Resolution:</strong> ${
+                sapMsg.includes("posting periods") 
+                  ? "The invoice date falls into a closed accounting period in SAP S/4HANA. Use the Inline Edit form below to adjust the Document Date (BLDAT) to an open period (e.g. July 2026 or an active posting period in Company Code " + (header.CompCode || "8000") + ") and click 'Validate &amp; Retry Parking in SAP'."
+                  : (err.resolution_hint || "Verify purchasing document, vendor master data, or posting date in SAP GUI (/nME23N).")
+              }
+            </div>
+
+            <!-- Failure Alert Delivery Status Banner -->
+            <div class="alert-dispatched-box">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+                <polyline points="22,6 12,13 2,6"></polyline>
+              </svg>
+              <span>
+                <strong>Automation Failure Alert:</strong> Triggered for <code>aic1176@aurogroup.com</code>
+                ${alertIncident.incident_id ? `• Incident: <code>${alertIncident.incident_id}</code>` : ''}
+                ${alertIncident.status ? `• Status: <code>${alertIncident.status}</code>` : '• Logged in Firestore incident_alerts'}
+              </span>
+            </div>
+
+            <!-- Extracted Fields Summary Grid -->
+            <div class="fields-dashboard-grid" style="margin-top:14px; margin-bottom:14px;">
+              <div class="field-card">
+                <div class="field-card-label">Invoice Ref (XBLNR)</div>
+                <div class="field-card-val">${header.RefDocNo || "-"}</div>
+              </div>
+              <div class="field-card">
+                <div class="field-card-label">Purchase Order (EBELN)</div>
+                <div class="field-card-val mono-val" style="color:var(--primary);">${header.PONumber || "-"}</div>
+              </div>
+              <div class="field-card">
+                <div class="field-card-label">Document Date (BLDAT)</div>
+                <div class="field-card-val mono-val" style="color:#ea580c; font-weight:700;">${header.DocDate || "-"}</div>
+              </div>
+              <div class="field-card">
+                <div class="field-card-label">Company Code (BUKRS)</div>
+                <div class="field-card-val mono-val">${header.CompCode || "8000"}</div>
+              </div>
+              <div class="field-card">
+                <div class="field-card-label">Total Gross Value</div>
+                <div class="field-card-val mono-val">₹ ${parseFloat(header.TotalInvVal || 0).toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
+              </div>
+              <div class="field-card">
+                <div class="field-card-label">Taxable Base</div>
+                <div class="field-card-val mono-val">₹ ${parseFloat(header.TaxableVal || 0).toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
+              </div>
+            </div>
+
+            <!-- Inline Self-Service Correction & Re-dispatch Form -->
+            <div style="font-size:13px; font-weight:700; color:#7c2d12; margin-top:12px; margin-bottom:4px;">
+              Self-Service Correction &amp; Re-park (No Admin Escalation Needed)
+            </div>
+            <form onsubmit="event.preventDefault(); submitHITLResolution('${traceId}');" style="margin-top:8px;">
+              <div class="hitl-form-grid">
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Document Date (BLDAT, YYYY-MM-DD or DD.MM.YYYY) *</label>
+                  <input
+                    type="text"
+                    id="hitl_date_${traceId}"
+                    class="hitl-input"
+                    placeholder="YYYY-MM-DD"
+                    value="${header.DocDate || ''}"
+                    required
+                  />
+                  <span style="font-size:10px; color:#b45309;">Change date to an open SAP posting period if rejected</span>
+                </div>
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Purchase Order (10-digit PO) *</label>
+                  <input
+                    type="text"
+                    id="hitl_po_${traceId}"
+                    class="hitl-input"
+                    placeholder="4500123456"
+                    value="${header.PONumber || ''}"
+                    pattern="^\\d{10}$"
+                    required
+                  />
+                </div>
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Company Code (BUKRS)</label>
+                  <input
+                    type="text"
+                    id="hitl_comp_${traceId}"
+                    class="hitl-input"
+                    value="${header.CompCode || '8000'}"
+                  />
+                </div>
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Invoice Ref No (XBLNR) *</label>
+                  <input
+                    type="text"
+                    id="hitl_ref_${traceId}"
+                    class="hitl-input"
+                    placeholder="INV-2026-001"
+                    value="${header.RefDocNo || ''}"
+                    required
+                  />
+                </div>
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Gross Value (INR) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    id="hitl_gross_${traceId}"
+                    class="hitl-input"
+                    value="${header.TotalInvVal || ''}"
+                    required
+                  />
+                </div>
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Taxable Base (INR) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    id="hitl_taxable_${traceId}"
+                    class="hitl-input"
+                    value="${header.TaxableVal || ''}"
+                    required
+                  />
+                </div>
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Service Entry Sheet (SES, optional)</label>
+                  <input
+                    type="text"
+                    id="hitl_ses_${traceId}"
+                    class="hitl-input"
+                    placeholder="1000xxxxxx"
+                    value="${header.SES || ''}"
+                  />
+                </div>
+                <div class="hitl-form-group">
+                  <label class="hitl-form-label">Delivery Note (optional)</label>
+                  <input
+                    type="text"
+                    id="hitl_deliv_${traceId}"
+                    class="hitl-input"
+                    placeholder="DN-xxxx"
+                    value="${header.DeliveryNote || ''}"
+                  />
+                </div>
+              </div>
+
+              <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
+                <button type="submit" class="btn-primary" id="btn_submit_hitl_${traceId}">
+                  <span>Validate &amp; Retry Parking in SAP (MIR7)</span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                    <polyline points="12 5 19 12 12 19"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="btn-secondary" onclick="copyToClipboard('${sapMsg.replace(/'/g, "\\'")}', 'SAP Error copied')">
+                  <span>Copy Error Details</span>
+                </button>
+                <button type="button" class="btn-secondary" onclick="copyToClipboard('${traceId}', 'Trace ID copied')">
+                  <span>Copy Trace ID</span>
+                </button>
+                <button type="button" class="btn-secondary" onclick="exportJSON('${traceId}', ${JSON.stringify(data).replace(/"/g, '&quot;')})">
+                  <span>Export Audit JSON</span>
                 </button>
               </div>
             </form>
@@ -2060,8 +2359,10 @@
         btn.innerText = "Validating with SAP S/4HANA...";
       }
 
+      const dateVal = document.getElementById(`hitl_date_${traceId}`)?.value || "";
       const poVal = document.getElementById(`hitl_po_${traceId}`)?.value || "";
       const sesVal = document.getElementById(`hitl_ses_${traceId}`)?.value || "";
+      const delivVal = document.getElementById(`hitl_deliv_${traceId}`)?.value || "";
       const refVal = document.getElementById(`hitl_ref_${traceId}`)?.value || "";
       const compVal = document.getElementById(`hitl_comp_${traceId}`)?.value || "";
       const grossVal = parseFloat(document.getElementById(`hitl_gross_${traceId}`)?.value || 0);
@@ -2078,8 +2379,10 @@
           },
           body: JSON.stringify({
             corrections: {
+              DocDate: dateVal || undefined,
               PONumber: poVal,
               SES: sesVal || null,
+              DeliveryNote: delivVal || null,
               RefDocNo: refVal,
               CompCode: compVal,
               TotalInvVal: grossVal,
@@ -2090,21 +2393,20 @@
 
         const updated = await res.json();
         if (res.ok && updated.status === "PARKED_SUCCESS") {
-          showToast("Success! Invoice parked in SAP.");
+          showToast(`Success! Invoice parked in SAP (Doc #${updated.sap_document_number || 'BELNR'}).`);
           // Replace the card in the feed with the successful card
           const card = document.getElementById(`card_${traceId}`);
-          if (card) {
-            card.remove();
-          }
+          if (card) card.remove();
           renderIndividualDocumentResult(updated, updated.filename);
           updateHITLBadge();
           if (currentTab === "hitl") loadHITLQueue();
         } else {
-          showToast(updated.error_info?.error_message || "Validation failed.");
-          if (btn) {
-            btn.disabled = false;
-            btn.innerText = "Validate & Resume Parking in SAP";
-          }
+          showToast(updated.error_info?.error_message || updated.sap_message || "Validation or SAP parking failed.");
+          // Update the card in place with latest SAP rejection/validation info
+          const card = document.getElementById(`card_${traceId}`);
+          if (card) card.remove();
+          renderIndividualDocumentResult(updated, updated.filename);
+          updateHITLBadge();
         }
       } catch (err) {
         showToast("Error resolving HITL: " + err.message);
@@ -2186,6 +2488,8 @@
         const rate = metrics.total_invoices ? Math.round((metrics.parked_success / metrics.total_invoices) * 100) : 0;
         document.getElementById("kpiParkedRate").innerText = `${rate}% success rate`;
         document.getElementById("kpiHITL").innerText = metrics.hitl_pending || 0;
+        const sapRejEl = document.getElementById("kpiSapRejected");
+        if (sapRejEl) sapRejEl.innerText = metrics.sap_rejected || 0;
         document.getElementById("kpiValidation").innerText = metrics.validation_failed || 0;
         document.getElementById("kpiDuplicates").innerText = metrics.duplicate_detected || 0;
         document.getElementById("kpiGrossValue").innerText = `₹ ${(metrics.total_gross_val || 0).toLocaleString('en-IN')}`;
@@ -2212,7 +2516,7 @@
           headers: { "Authorization": "Bearer " + idToken, "X-Firebase-Token": idToken }
         });
         const alData = await alRes.json();
-        renderMISAlerts(alData.alerts || []);
+        renderMISAlerts(alData.alerts || alData.incident_alerts || []);
 
       } catch (err) {
         showToast("Error loading MIS: " + err.message);
@@ -2235,6 +2539,7 @@
         let stPill = "";
         if (inv.status === "PARKED_SUCCESS") stPill = `<span style="background:var(--success-light); color:var(--success); padding:2px 8px; border-radius:4px; font-weight:600; font-size:11px;">Parked</span>`;
         else if (inv.status === "HITL_REQUIRED") stPill = `<span style="background:var(--warning-light); color:var(--warning); padding:2px 8px; border-radius:4px; font-weight:600; font-size:11px;">HITL Required</span>`;
+        else if (inv.status === "SAP_REJECTED") stPill = `<span style="background:#ffedd5; color:#c2410c; padding:2px 8px; border-radius:4px; font-weight:600; font-size:11px;">SAP Rejected</span>`;
         else if (inv.status === "DUPLICATE_DETECTED") stPill = `<span style="background:var(--info-light); color:#0369a1; padding:2px 8px; border-radius:4px; font-weight:600; font-size:11px;">Duplicate</span>`;
         else stPill = `<span style="background:var(--danger-light); color:var(--danger); padding:2px 8px; border-radius:4px; font-weight:600; font-size:11px;">Failed</span>`;
 
@@ -2249,13 +2554,17 @@
             <td>${stPill}</td>
             <td class="mono-val" style="color:#0070f2; font-weight:700;">${inv.sap_document_number || "-"}</td>
             <td>
-              ${inv.status === "HITL_REQUIRED" ? `
+              ${(inv.status === "HITL_REQUIRED" || inv.status === "SAP_REJECTED") ? `
                 <button class="btn-warning" onclick="switchTab('hitl')" style="padding:4px 8px; font-size:11px;">Resolve</button>
               ` : `
                 <button class="btn-secondary" onclick="exportJSON('${inv.trace_id}', ${JSON.stringify(inv).replace(/"/g, '&quot;')})" style="padding:4px 8px; font-size:11px;">JSON</button>
               `}
             </td>
           </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+    }
         `;
       });
       tbody.innerHTML = html;
@@ -2345,6 +2654,23 @@
       navigator.clipboard.writeText(text).then(() => {
         showToast(message || "Copied to clipboard");
       });
+    };
+
+    window.sendTestFailureAlert = async () => {
+      if (!auth.currentUser) return;
+      try {
+        showToast("Sending test failure alert to aic1176@aurogroup.com...");
+        const idToken = await auth.currentUser.getIdToken(true);
+        const res = await fetch("/api/alerts/test", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + idToken, "X-Firebase-Token": idToken }
+        });
+        const data = await res.json();
+        showToast(`Alert Status: ${data.incident?.email_status || 'PROCESSED'}`);
+        loadMISDashboard();
+      } catch (err) {
+        showToast("Failed to trigger alert: " + err.message);
+      }
     };
 
     window.exportJSON = (traceId, data) => {

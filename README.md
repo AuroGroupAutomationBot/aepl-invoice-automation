@@ -274,9 +274,102 @@ Expected JSON Response:
 | `MAX_FILE_SIZE_BYTES` | Integer | `10485760` | Maximum document upload size limit (10 MB strict enterprise limit). |
 | `ADMIN_EMAILS` | String | `aic1176@aurogroup.com` | Designated System Administrator email(s) for MIS privileges. |
 | `ALERT_EMAIL_RECIPIENT` | String | `aic1176@aurogroup.com` | Recipient for automated failure model alerts and notifications. |
-| `SMTP_HOST` | String | *(Optional)* | Outbound SMTP relay server for email notification dispatch. |
+| `ALERT_SENDER_EMAIL` | String | `aic1176@aurogroup.com` | From address for outgoing failure alert emails (must be a mailbox you own or have verified with your email provider). |
+| `MAIL_COLLECTION` | String | `mail` | Firestore collection path monitored by the `firestore-send-email` extension. |
+| `ALERT_WEBHOOK_URL` | String | *(Optional)* | HTTPS Webhook URL (e.g. Microsoft Power Automate HTTP trigger) for corporate alerts without SMTP. |
 | `ALLOWED_EMAIL_DOMAINS` | String | `ent.aurogroup.com;aurogroup.com;axisclinicals.com` | Semicolon-delimited authorized corporate domains. |
 | `ALLOWED_EMAILS` | String | *(Whitelisted corporate users)* | Semicolon-delimited authorized employee email addresses. |
+
+### Automated Failure Alerts (Official Firebase Extension: `firestore-send-email`)
+
+The application integrates natively with the official Firebase Extension: [Trigger Email from Firestore (`firestore-send-email`)](https://firebase.google.com/docs/extensions/official/firestore-send-email).
+
+#### How It Works (Decoupled & Zero Container SMTP)
+
+1. Whenever an invoice fails (Gemini extraction crash, Model Armor security block, SAP CPI BAPI rejection, or unhandled exception), the application backend (`main.py`) writes an email document directly to the Cloud Firestore collection `mail/{mailId}` in Mumbai (`asia-south1`).
+2. The document follows the official `firestore-send-email` schema:
+   ```json
+   {
+     "to": ["aic1176@aurogroup.com"],
+     "from": "aic1176@aurogroup.com",
+     "replyTo": "aic1176@aurogroup.com",
+     "message": {
+       "subject": "[SAP AP FAILURE ALERT] Purchase Order Missing - invoice_102.pdf (trace_a8f3)",
+       "text": "Plain text summary of the failure...",
+       "html": "<html>Rich HTML alert with incident table and action links</html>"
+     },
+     "incident_id": "inc_9b2e1f44",
+     "failure_type": "ERR_MISSING_PO",
+     "filename": "invoice_102.pdf",
+     "trace_id": "trace_a8f3",
+     "timestamp": "2026-10-27T14:00:00Z"
+   }
+   ```
+3. The official Firebase Extension automatically picks up the new document from `mail`, sends the email to `aic1176@aurogroup.com`, and records the delivery status (`delivery.state: "SUCCESS"`) directly on the document.
+4. **Cloud Run does NOT need SMTP credentials or email delivery libraries.** Cloud Run only requires standard Firestore write permissions (`roles/datastore.user`), which its attached Service Account already possesses.
+
+---
+
+### Recommended Alternatives to SendGrid
+
+You can configure the `firestore-send-email` extension with any of these reliable alternatives:
+
+| Provider | Free Allowance | Setup Difficulty | Best For | Connection URI / Config in Firebase Extension |
+| :--- | :--- | :--- | :--- | :--- |
+| **Brevo** *(formerly Sendinblue)* | **300 emails / day forever** | Very Easy (No credit card needed) | **Recommended for Quick Setup** | `smtps://<login>:<smtp_key>@smtp-relay.brevo.com:465` |
+| **MailerSend** | **3,000 emails / month forever** | Easy | Large volume free tier | `smtps://<username>:<password>@smtp.mailersend.net:465` |
+| **Google Workspace OAuth2** | Existing corporate quota | Medium (GCP Console OAuth setup) | Zero passwords, native to Google | Configure `OAuth2 Client ID`, `Client Secret`, `Refresh Token` |
+| **Postmark** | **100 emails / month forever** | Easy | Exceptional inbox deliverability | `smtps://<server_token>:<server_token>@smtp.postmarkapp.com:465` |
+| **Mailgun** | 3-month free trial + Flex tier | Easy | Established ESP standard | `smtps://postmaster%40<domain>:<api_key>@smtp.mailgun.org:465` |
+| **AWS SES** | $0.10 per 1,000 emails | Medium (AWS IAM setup) | Lowest cost enterprise scale | `smtps://<iam_user>:<iam_pass>@email-smtp.us-east-1.amazonaws.com:465` |
+| **Native Google Cloud Monitoring** | **100% Free Forever** | 1 Command | Zero 3rd-party accounts | Native GCP alert channel to `aic1176@aurogroup.com` |
+
+---
+
+### Step-by-Step: Installing the `firestore-send-email` Extension
+
+#### Option A: Via Firebase Console (Recommended — 2 Minutes)
+1. Open [Firebase Console Extensions](https://console.firebase.google.com/project/prj-aepl-ai-inv-auto-dev/extensions).
+2. Click **Explore Extensions** and locate **Trigger Email from Firestore** (`firestore-send-email`).
+3. Click **Install in project**.
+4. Configure the parameters:
+   - **Cloud Firestore collection:** `mail` (default)
+   - **Default FROM address:** `aic1176@aurogroup.com`
+   - **Default REPLY-TO address:** `aic1176@aurogroup.com`
+   - **SMTP connection URI:** Paste your chosen provider's connection string (e.g., from Brevo: `smtps://your_account:your_key@smtp-relay.brevo.com:465`).
+5. Click **Install Extension**. Firebase deploys the managed worker in the background.
+
+#### Option B: Via Firebase CLI
+```bash
+firebase ext:install firebase/firestore-send-email \
+  --project=prj-aepl-ai-inv-auto-dev \
+  --local
+```
+
+#### Option C: Native Google Cloud Monitoring (Zero 3rd-Party Providers)
+If your organization does not want to use any external email provider, Google Cloud can send email alerts directly to `aic1176@aurogroup.com`:
+```bash
+# 1. Create native Google Cloud Email Notification Channel
+gcloud monitoring notification-channels create \
+  --type=email \
+  --display-name="AEPL Invoice Failure Alerts" \
+  --channel-labels=email_address="aic1176@aurogroup.com"
+
+# 2. Bind the channel to Cloud Run critical failure events
+gcloud alpha monitoring policies create \
+  --display-name="SAP Invoice Processing Failure Policy" \
+  --condition-filter='resource.type="cloud_run_revision" AND jsonPayload.event="INVOICE_PROCESSING_FAILURE"' \
+  --notification-channels="$(gcloud monitoring notification-channels list --filter='displayName="AEPL Invoice Failure Alerts"' --format='value(name)')" \
+  --combiner="OR"
+```
+
+---
+
+### Verifying Alert Delivery
+1. Open the application portal and sign in with authorized credentials.
+2. Navigate to the **Admin MIS Dashboard** tab.
+3. In the **Automated Incident Failure Alerts** section, click **"Send Test Alert"**.
+4. The test incident will appear in the MIS audit table and a corresponding document will be written to the `mail` collection in Firestore, triggering the configured email extension.
 
 ### Secret Manager Credentials
 
