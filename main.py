@@ -1689,6 +1689,27 @@ async def process_single_invoice_document(
                 message=f"Pure duplicate invoice confirmed: {ref_doc_no} was found in Firestore (#{existing_doc}) and rejected by SAP CPI ({sap_err_msg}).",
                 metadata={"ref_doc_no": ref_doc_no, "existing_doc": existing_doc, "cpi_message": sap_err_msg},
             )
+
+            # TRIGGER FAILURE ALERT EMAIL TO aic1176@aurogroup.com
+            alert_incident = alert_service.send_failure_alert(
+                failure_type="DUPLICATE_INVOICE_PREVENTED",
+                filename=filename,
+                trace_id=trace_id,
+                user_email=user_email,
+                error_title=f"Duplicate Invoice Prevented - {ref_doc_no}",
+                error_detail=(
+                    f"Invoice with Reference '{ref_doc_no}' and Company Code '{comp_code}' "
+                    f"was already processed in SAP (Document #{existing_doc}). "
+                    f"SAP CPI Rejection: {sap_err_msg}"
+                ),
+                metadata={
+                    "ref_doc_no": ref_doc_no,
+                    "existing_doc": existing_doc,
+                    "comp_code": comp_code,
+                    "sap_message": sap_err_msg,
+                },
+            )
+
             return {
                 "status": "DUPLICATE_DETECTED",
                 "trace_id": trace_id,
@@ -1697,6 +1718,12 @@ async def process_single_invoice_document(
                 "sap_message": sap_err_msg,
                 "extracted_data": payload_dict,
                 "telemetry": telemetry,
+                "alert_notification": {
+                    "incident_id": alert_incident.get("incident_id"),
+                    "status": alert_incident.get("email_status"),
+                    "recipient": alert_incident.get("recipient"),
+                    "timestamp": alert_incident.get("timestamp"),
+                },
             }
         else:
             err_info = SAPErrorTaxonomy.format_error("ERR_SAP_CPI_REJECTED", detail=sap_err_msg)
@@ -2198,12 +2225,38 @@ async def resolve_hitl_invoice(
                 message=f"HITL resumed SAP dispatch confirmed duplicate: {ref_doc_no} (Document #{existing_doc}) rejected by SAP CPI.",
                 metadata={"ref_doc_no": ref_doc_no, "existing_doc": existing_doc, "cpi_message": sap_err_msg},
             )
+
+            # TRIGGER FAILURE ALERT EMAIL TO aic1176@aurogroup.com
+            alert_incident = alert_service.send_failure_alert(
+                failure_type="DUPLICATE_INVOICE_PREVENTED",
+                filename=invoice.get("filename", "unknown"),
+                trace_id=trace_id,
+                user_email=user_email,
+                error_title=f"Duplicate Invoice Prevented (HITL) - {ref_doc_no}",
+                error_detail=(
+                    f"Invoice with Reference '{ref_doc_no}' and Company Code '{comp_code}' "
+                    f"was already processed in SAP (Document #{existing_doc}). "
+                    f"SAP CPI Rejection: {sap_err_msg}"
+                ),
+                metadata={
+                    "ref_doc_no": ref_doc_no,
+                    "existing_doc": existing_doc,
+                    "comp_code": comp_code,
+                    "sap_message": sap_err_msg,
+                },
+            )
+
             return JSONResponse(status_code=422, content={
                 "status": "DUPLICATE_DETECTED",
                 "trace_id": trace_id,
                 "error_info": err_info,
                 "sap_message": sap_err_msg,
                 "extracted_data": extracted_data,
+                "alert_notification": {
+                    "incident_id": alert_incident.get("incident_id"),
+                    "status": alert_incident.get("email_status"),
+                    "recipient": alert_incident.get("recipient"),
+                },
             })
         else:
             err_info = SAPErrorTaxonomy.format_error("ERR_SAP_CPI_REJECTED", detail=sap_err_msg)

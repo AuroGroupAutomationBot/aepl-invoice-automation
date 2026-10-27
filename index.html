@@ -2393,6 +2393,7 @@
       // 3. Duplicate Invoice Notice
       else if (data.status === "DUPLICATE_DETECTED") {
         const err = data.error_info || {};
+        const alertIncident = data.alert_notification || {};
         innerHTML += `
           <div class="duplicate-alert-box">
             <div style="font-weight:700; font-size:14px; margin-bottom:4px; display:flex; align-items:center; gap:8px;">
@@ -2405,6 +2406,18 @@
             </div>
             <div style="font-size:13px; line-height:1.4;">${err.error_message || "An invoice with this reference number has already been parked."}</div>
             <div style="font-size:12px; margin-top:6px; font-weight:600;">Action: ${err.resolution_hint || "Verify if this invoice was already settled."}</div>
+
+            <!-- Failure Alert Delivery Status Banner -->
+            <div class="alert-dispatched-box" style="margin-top:10px; background:#eff6ff; border-color:#bfdbfe; color:#1e40af;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+                <polyline points="22,6 12,13 2,6"></polyline>
+              </svg>
+              <span>
+                <strong>Duplicate Alert Dispatched:</strong> Notification sent to <code>aic1176@aurogroup.com</code> via Power Automate
+                ${alertIncident.incident_id ? `• Incident: <code>${alertIncident.incident_id}</code>` : ''}
+              </span>
+            </div>
           </div>
         `;
       }
