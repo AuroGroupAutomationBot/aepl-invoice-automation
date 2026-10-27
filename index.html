@@ -1042,7 +1042,7 @@
       <div class="portal-body">
         <h1 class="page-title">Enterprise Single Sign-On</h1>
         <p class="page-description">
-          Enter your authorized corporate email to receive a passwordless authentication link and access the SAP S/4HANA invoice ingestion engine.
+          Enter your authorized corporate email (@aurogroup.com, @axisclinicals.com) to sign in to the SAP S/4HANA invoice ingestion engine.
         </p>
 
         <div class="auth-form-wrap">
@@ -1086,7 +1086,7 @@
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
-            <span>Passwordless authentication link sent directly to your corporate inbox (Mumbai Firestore audited)</span>
+            <span>Enterprise Single Sign-On authenticated (Audited in Cloud Firestore, Mumbai)</span>
           </div>
         </div>
 
@@ -1103,7 +1103,7 @@
         </p>
 
         <!-- Dropzone -->
-        <div class="upload-dropzone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <div class="upload-dropzone" id="dropZone" onclick="if(event.target.id!=='fileInput')document.getElementById('fileInput').click()">
           <div class="dropzone-icon-circle">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -1372,28 +1372,22 @@
     <span id="toastMessage">Notification</span>
   </div>
 
-  <!-- Client Script with Firebase Auth & Sequential Engine -->
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-    import {
-      getAuth,
-      sendSignInLinkToEmail,
-      isSignInWithEmailLink,
-      signInWithEmailLink,
-      signOut,
-      onAuthStateChanged
-    } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
-
-    const firebaseConfig = {
-      apiKey: "AIzaSyDihoXXCEGIPirLVZIb4GbOtQbZ7WyLuyo",
-      authDomain: "prj-aepl-ai-inv-auto-dev.firebaseapp.com",
-      projectId: "prj-aepl-ai-inv-auto-dev"
-    };
-
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
+  <!-- Primary Application Engine Script (Zero External CDN Dependency) -->
+  <script>
+    window._firebaseAuth = null;
+    window._firebaseSignOut = null;
+    window._firebaseSignInWithCustomToken = null;
 
     const ALLOWED_DOMAINS = ["ent.aurogroup.com", "aurogroup.com", "axisclinicals.com"];
+    const ALLOWED_EMAILS = [
+      "aic1176@aurogroup.com",
+      "hasith.g@aurogroup.com",
+      "mohithsai.g@axisclinicals.com",
+      "abigna.k@aurogroup.com",
+      "admin@aurogroup.com",
+      "finance@aurogroup.com"
+    ];
+    window._invoiceDataMap = {};
     let selectedFiles = [];
     let timerInterval = null;
     let startTime = 0;
@@ -1433,6 +1427,50 @@
       if (tabName === "mis") loadMISDashboard();
     };
 
+    // Helper to get authentication token (Firebase ID Token or Corporate Session Token)
+    async function getAuthToken() {
+      if (window._firebaseAuth && window._firebaseAuth.currentUser) {
+        try {
+          return await window._firebaseAuth.currentUser.getIdToken();
+        } catch (_) {}
+      }
+      return window.localStorage.getItem("corporate_token") || "";
+    }
+    window.getAuthToken = getAuthToken;
+
+    function isAuthenticated() {
+      return !!((window._firebaseAuth && window._firebaseAuth.currentUser) || window.localStorage.getItem("corporate_token"));
+    }
+    window.isAuthenticated = isAuthenticated;
+
+    function getCurrentUserEmail() {
+      return (window._firebaseAuth && window._firebaseAuth.currentUser && window._firebaseAuth.currentUser.email) || window.localStorage.getItem("user_email") || "";
+    }
+    window.getCurrentUserEmail = getCurrentUserEmail;
+
+    function setAuthenticatedState(email, isAdmin) {
+      const loginCard = document.getElementById("loginCard");
+      const portalNav = document.getElementById("portalNav");
+      const userPill = document.getElementById("userPill");
+      const userEmailText = document.getElementById("userEmailText");
+      const adminBadge = document.getElementById("adminBadge");
+
+      if (userEmailText) userEmailText.innerText = email;
+      if (adminBadge) {
+        if (isAdmin || email === "aic1176@aurogroup.com") {
+          adminBadge.style.display = "inline-block";
+        } else {
+          adminBadge.style.display = "none";
+        }
+      }
+
+      if (userPill) userPill.style.display = "flex";
+      if (portalNav) portalNav.style.display = "flex";
+      if (loginCard) loginCard.style.display = "none";
+      switchTab(currentTab || "upload");
+      updateHITLBadge();
+    }
+
     // Quick Login as Admin
     window.quickLoginAdmin = () => {
       const emailInput = document.getElementById("emailInput");
@@ -1440,7 +1478,7 @@
       window.handleLogin();
     };
 
-    // Passwordless Login
+    // Corporate Single Sign-On (Direct Instant Access & Firebase Sync)
     window.handleLogin = async () => {
       const emailInput = document.getElementById("emailInput");
       const sendBtn = document.getElementById("sendLinkBtn");
@@ -1451,10 +1489,9 @@
         return;
       }
 
-      const isAllowed = ALLOWED_DOMAINS.some(d => userEmail.endsWith("@" + d) || userEmail.endsWith("." + d));
+      const isAllowed = ALLOWED_EMAILS.includes(userEmail) || ALLOWED_DOMAINS.some(d => userEmail.endsWith("@" + d) || userEmail.endsWith("." + d));
       if (!isAllowed) {
         showToast("Access restricted: Email domain not authorized.");
-        // Record failed attempt in Firestore
         fetch("/api/auth/record-login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1463,118 +1500,65 @@
         return;
       }
 
-      const actionCodeSettings = {
-        url: window.location.origin + "/finish-login",
-        handleCodeInApp: true,
-      };
-
       sendBtn.disabled = true;
-      sendBtn.innerText = "Dispatching Link...";
+      sendBtn.innerText = "Authenticating...";
 
       try {
-        await sendSignInLinkToEmail(auth, userEmail, actionCodeSettings);
-        window.localStorage.setItem("emailForSignIn", userEmail);
-        showToast("Sign-in link sent to your corporate inbox.");
-
-        fetch("/api/auth/record-login", {
+        const res = await fetch("/api/auth/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: userEmail, status: "SUCCESS", reason: "Passwordless magic link requested" })
-        }).catch(() => {});
+          body: JSON.stringify({ email: userEmail })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Authentication rejected.");
+        }
 
-        const statusEl = document.getElementById("loginStatus");
-        statusEl.style.display = "block";
-        statusEl.innerHTML = `
-          <div style="background:var(--success-light); border:1px solid var(--success-border); color:var(--success); padding:12px 16px; border-radius:6px; font-size:13px;">
-            A sign-in link has been sent to <strong>${userEmail}</strong>. Please check your corporate inbox to continue.
-          </div>
-        `;
+        window.localStorage.setItem("corporate_token", data.token);
+        window.localStorage.setItem("user_email", data.email);
+
+        setAuthenticatedState(data.email, data.is_admin);
+        showToast(`Welcome! Signed in as ${data.email}`);
+
+        if (data.custom_token && window._firebaseSignInWithCustomToken && window._firebaseAuth) {
+          window._firebaseSignInWithCustomToken(window._firebaseAuth, data.custom_token).catch(fbErr => {
+            console.warn("Firebase custom token sync note:", fbErr);
+          });
+        }
       } catch (err) {
-        console.error("Sign-in error:", err);
-        showToast("Sign-in request failed. Try again.");
+        console.error("Login error:", err);
+        showToast(err.message || "Sign-in failed. Please verify your email.");
       } finally {
         sendBtn.disabled = false;
-        sendBtn.innerHTML = `<span>Continue</span>`;
+        sendBtn.innerHTML = `<span>Continue</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>`;
       }
     };
 
-    // Finish Login from Email Link
-    if (isSignInWithEmailLink(auth, window.location.href)) {
-      let email = window.localStorage.getItem("emailForSignIn");
-      if (!email) {
-        email = window.prompt("Confirm your corporate email address to finalize sign-in:");
-      }
-      if (email) {
-        signInWithEmailLink(auth, email.trim().toLowerCase(), window.location.href)
-          .then(() => {
-            window.localStorage.removeItem("emailForSignIn");
-            window.history.replaceState({}, document.title, "/");
-            showToast("Welcome! Single Sign-On authenticated.");
-          })
-          .catch((err) => {
-            window.history.replaceState({}, document.title, "/");
-            showToast("Authentication failed or link expired.");
-          });
-      }
+    // Restore persistent session on page load
+    const savedToken = window.localStorage.getItem("corporate_token");
+    const savedEmail = window.localStorage.getItem("user_email");
+    if (savedToken && savedEmail) {
+      setAuthenticatedState(savedEmail, savedEmail === "aic1176@aurogroup.com");
+    } else {
+      const userPill = document.getElementById("userPill");
+      const portalNav = document.getElementById("portalNav");
+      const loginCard = document.getElementById("loginCard");
+      if (userPill) userPill.style.display = "none";
+      if (portalNav) portalNav.style.display = "none";
+      if (loginCard) loginCard.style.display = "block";
+      document.getElementById("viewUpload").style.display = "none";
+      document.getElementById("viewHITL").style.display = "none";
+      document.getElementById("viewMIS").style.display = "none";
     }
 
-    // Auth State Observer
-    onAuthStateChanged(auth, async (user) => {
-      const loginCard = document.getElementById("loginCard");
-      const portalNav = document.getElementById("portalNav");
-      const userPill = document.getElementById("userPill");
-      const userEmailText = document.getElementById("userEmailText");
-
-      if (user) {
-        const email = (user.email || "").toLowerCase().trim();
-        const isAllowed = ALLOWED_DOMAINS.some(d => email.endsWith("@" + d) || email.endsWith("." + d));
-        if (!isAllowed) {
-          await signOut(auth);
-          showToast("Account domain is not authorized.");
-          return;
-        }
-
-        userEmailText.innerText = email;
-        const adminBadge = document.getElementById("adminBadge");
-
-        // Verify Administrator status with backend
-        try {
-          const idToken = await user.getIdToken();
-          const meRes = await fetch("/api/auth/me", {
-            headers: { "Authorization": "Bearer " + idToken, "X-Firebase-Token": idToken }
-          });
-          const meData = await meRes.json();
-          if (meData.is_admin || email === "aic1176@aurogroup.com") {
-            if (adminBadge) adminBadge.style.display = "inline-block";
-          } else {
-            if (adminBadge) adminBadge.style.display = "none";
-          }
-        } catch (_) {
-          if (email === "aic1176@aurogroup.com" && adminBadge) {
-            adminBadge.style.display = "inline-block";
-          }
-        }
-
-        userPill.style.display = "flex";
-        portalNav.style.display = "flex";
-        loginCard.style.display = "none";
-        switchTab("upload");
-        updateHITLBadge();
-      } else {
-        userPill.style.display = "none";
-        portalNav.style.display = "none";
-        loginCard.style.display = "block";
-        document.getElementById("viewUpload").style.display = "none";
-        document.getElementById("viewHITL").style.display = "none";
-        document.getElementById("viewMIS").style.display = "none";
-      }
-    });
-
+    // Sign out handler
     window.logoutUser = async () => {
-      await signOut(auth);
-      selectedFiles = [];
-      renderFileList();
-      document.getElementById("documentResultsFeed").innerHTML = "";
+      window.localStorage.removeItem("corporate_token");
+      window.localStorage.removeItem("user_email");
+      if (window._firebaseSignOut && window._firebaseAuth) {
+        try { await window._firebaseSignOut(window._firebaseAuth); } catch (_) {}
+      }
+      window.location.reload();
     };
 
     // Dropzone & File Management
@@ -1590,6 +1574,7 @@
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB strict limit per specification
 
     window.handleFiles = (files) => {
+      if (!files || !files.length) return;
       for (const f of files) {
         if (f.size > MAX_FILE_SIZE) {
           const mb = (f.size / (1024 * 1024)).toFixed(1);
@@ -1598,6 +1583,8 @@
         }
         selectedFiles.push({ file: f, status: "READY" });
       }
+      const fileInput = document.getElementById("fileInput");
+      if (fileInput) fileInput.value = "";
       renderFileList();
     };
 
@@ -1663,7 +1650,7 @@
     // SEQUENTIAL MULTI-DOCUMENT PROCESSOR
     // Processes ONE file at a time; starts the next strictly after the previous completes.
     window.submitBatchSequentially = async () => {
-      if (!selectedFiles.length || !auth.currentUser) return;
+      if (!selectedFiles.length || !isAuthenticated()) return;
 
       const parkBtn = document.getElementById("parkBtn");
       const stepper = document.getElementById("progressStepper");
@@ -1700,7 +1687,7 @@
         const t4 = setTimeout(() => setStepState(4), 6000);
 
         try {
-          const idToken = await auth.currentUser.getIdToken(true);
+          const idToken = await getAuthToken();
           const formData = new FormData();
           formData.append("file", f);
 
@@ -1718,7 +1705,31 @@
           stopLiveTimer();
           setStepState(5);
 
-          const result = await response.json();
+          let result;
+          try {
+            const rawText = await response.text();
+            try {
+              result = JSON.parse(rawText);
+            } catch (_) {
+              result = {
+                status: "SYSTEM_ERROR",
+                error_info: {
+                  error_title: `Server Notice (HTTP ${response.status})`,
+                  error_message: rawText || `HTTP ${response.status}: Server did not return JSON.`,
+                  resolution_hint: "Verify file is under 10 MB and in a valid format."
+                }
+              };
+            }
+          } catch (readErr) {
+            result = {
+              status: "SYSTEM_ERROR",
+              error_info: {
+                error_title: "Network Read Failure",
+                error_message: readErr.message,
+                resolution_hint: "Check network connection and retry."
+              }
+            };
+          }
 
           if (!result.status) {
             let errorMsg = "Document could not be processed by server.";
@@ -1809,10 +1820,15 @@
     };
 
     // RENDER INDIVIDUAL DOCUMENT RESULT CARD
-    function renderIndividualDocumentResult(data, originalFilename) {
-      const feed = document.getElementById("documentResultsFeed");
+    function renderIndividualDocumentResult(data, originalFilename, targetContainerId = "documentResultsFeed") {
+      const feed = document.getElementById(targetContainerId) || document.getElementById("documentResultsFeed");
       const traceId = data.trace_id || ("doc_" + Math.random().toString(36).substring(7));
       const filename = data.filename || originalFilename || "Invoice Document";
+
+      window._invoiceDataMap = window._invoiceDataMap || {};
+      if (traceId) {
+        window._invoiceDataMap[traceId] = data;
+      }
 
       let statusPill = "";
       let cardClass = "";
@@ -1968,7 +1984,7 @@
           ` : ''}
 
           <div style="margin-top:14px; display:flex; gap:8px;">
-            <button class="btn-secondary" onclick="exportJSON('${traceId}', ${JSON.stringify(data).replace(/"/g, '&quot;')})">
+            <button class="btn-secondary" onclick="exportJSON('${traceId}')">
               <span>Export Audit JSON</span>
             </button>
             <button class="btn-secondary" onclick="copyToClipboard('${traceId}', 'Trace ID copied')">
@@ -2272,13 +2288,13 @@
                     <polyline points="12 5 19 12 12 19"></polyline>
                   </svg>
                 </button>
-                <button type="button" class="btn-secondary" onclick="copyToClipboard('${sapMsg.replace(/'/g, "\\'")}', 'SAP Error copied')">
+                <button type="button" class="btn-secondary" onclick="copyDocError('${traceId}')">
                   <span>Copy Error Details</span>
                 </button>
                 <button type="button" class="btn-secondary" onclick="copyToClipboard('${traceId}', 'Trace ID copied')">
                   <span>Copy Trace ID</span>
                 </button>
-                <button type="button" class="btn-secondary" onclick="exportJSON('${traceId}', ${JSON.stringify(data).replace(/"/g, '&quot;')})">
+                <button type="button" class="btn-secondary" onclick="exportJSON('${traceId}')">
                   <span>Export Audit JSON</span>
                 </button>
               </div>
@@ -2369,7 +2385,7 @@
       const taxableVal = parseFloat(document.getElementById(`hitl_taxable_${traceId}`)?.value || 0);
 
       try {
-        const idToken = await auth.currentUser.getIdToken(true);
+        const idToken = await getAuthToken();
         const res = await fetch(`/api/invoices/${traceId}/resolve-hitl`, {
           method: "POST",
           headers: {
@@ -2391,21 +2407,24 @@
           })
         });
 
-        const updated = await res.json();
+        let updated;
+        try {
+          const rawText = await res.text();
+          try { updated = JSON.parse(rawText); } catch (_) { updated = { status: "SAP_REJECTED", sap_message: rawText }; }
+        } catch (_) { updated = { status: "SYSTEM_ERROR", sap_message: "Network response error" }; }
+        const containerId = currentTab === "hitl" ? "hitlQueueContainer" : "documentResultsFeed";
         if (res.ok && updated.status === "PARKED_SUCCESS") {
           showToast(`Success! Invoice parked in SAP (Doc #${updated.sap_document_number || 'BELNR'}).`);
-          // Replace the card in the feed with the successful card
           const card = document.getElementById(`card_${traceId}`);
           if (card) card.remove();
-          renderIndividualDocumentResult(updated, updated.filename);
+          renderIndividualDocumentResult(updated, updated.filename, containerId);
           updateHITLBadge();
           if (currentTab === "hitl") loadHITLQueue();
         } else {
           showToast(updated.error_info?.error_message || updated.sap_message || "Validation or SAP parking failed.");
-          // Update the card in place with latest SAP rejection/validation info
           const card = document.getElementById(`card_${traceId}`);
           if (card) card.remove();
-          renderIndividualDocumentResult(updated, updated.filename);
+          renderIndividualDocumentResult(updated, updated.filename, containerId);
           updateHITLBadge();
         }
       } catch (err) {
@@ -2419,9 +2438,9 @@
 
     // UPDATE HITL BADGE IN HEADER
     async function updateHITLBadge() {
-      if (!auth.currentUser) return;
+      if (!isAuthenticated()) return;
       try {
-        const idToken = await auth.currentUser.getIdToken(true);
+        const idToken = await getAuthToken();
         const res = await fetch("/api/mis/hitl-queue", {
           headers: { "Authorization": "Bearer " + idToken, "X-Firebase-Token": idToken }
         });
@@ -2440,7 +2459,7 @@
       container.innerHTML = `<div style="text-align:center; padding:30px; color:var(--slate-400);">Loading pending reviews...</div>`;
 
       try {
-        const idToken = await auth.currentUser.getIdToken(true);
+        const idToken = await getAuthToken();
         const res = await fetch("/api/mis/hitl-queue", {
           headers: { "Authorization": "Bearer " + idToken, "X-Firebase-Token": idToken }
         });
@@ -2463,7 +2482,7 @@
 
         container.innerHTML = "";
         items.forEach(inv => {
-          renderIndividualDocumentResult(inv, inv.filename);
+          renderIndividualDocumentResult(inv, inv.filename, "hitlQueueContainer");
         });
 
       } catch (err) {
@@ -2473,9 +2492,9 @@
 
     // LOAD ADMIN MIS DASHBOARD & AUDIT TELEMETRY
     window.loadMISDashboard = async () => {
-      if (!auth.currentUser) return;
+      if (!isAuthenticated()) return;
       try {
-        const idToken = await auth.currentUser.getIdToken(true);
+        const idToken = await getAuthToken();
 
         // 1. Fetch Metrics
         const mRes = await fetch("/api/mis/dashboard", {
@@ -2532,6 +2551,7 @@
 
       let html = "";
       invoices.forEach(inv => {
+        if (inv.trace_id) window._invoiceDataMap[inv.trace_id] = inv;
         const h = inv.extracted_data?.HeaderData || {};
         const dateStr = inv.created_at ? new Date(inv.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : "-";
         const gross = h.TotalInvVal ? `₹ ${parseFloat(h.TotalInvVal).toLocaleString('en-IN', {minimumFractionDigits:2})}` : "-";
@@ -2557,14 +2577,10 @@
               ${(inv.status === "HITL_REQUIRED" || inv.status === "SAP_REJECTED") ? `
                 <button class="btn-warning" onclick="switchTab('hitl')" style="padding:4px 8px; font-size:11px;">Resolve</button>
               ` : `
-                <button class="btn-secondary" onclick="exportJSON('${inv.trace_id}', ${JSON.stringify(inv).replace(/"/g, '&quot;')})" style="padding:4px 8px; font-size:11px;">JSON</button>
+                <button class="btn-secondary" onclick="exportJSON('${inv.trace_id}')" style="padding:4px 8px; font-size:11px;">JSON</button>
               `}
             </td>
           </tr>
-        `;
-      });
-      tbody.innerHTML = html;
-    }
         `;
       });
       tbody.innerHTML = html;
@@ -2657,10 +2673,10 @@
     };
 
     window.sendTestFailureAlert = async () => {
-      if (!auth.currentUser) return;
+      if (!isAuthenticated()) return;
       try {
         showToast("Sending test failure alert to aic1176@aurogroup.com...");
-        const idToken = await auth.currentUser.getIdToken(true);
+        const idToken = await getAuthToken();
         const res = await fetch("/api/alerts/test", {
           method: "POST",
           headers: { "Authorization": "Bearer " + idToken, "X-Firebase-Token": idToken }
@@ -2673,7 +2689,14 @@
       }
     };
 
-    window.exportJSON = (traceId, data) => {
+    window.copyDocError = (traceId) => {
+      const data = (window._invoiceDataMap && window._invoiceDataMap[traceId]) || {};
+      const msg = data.sap_message || data.error_info?.error_message || "SAP Business Error";
+      copyToClipboard(msg, "Error details copied");
+    };
+
+    window.exportJSON = (traceId) => {
+      const data = (window._invoiceDataMap && window._invoiceDataMap[traceId]) || {};
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -2682,6 +2705,89 @@
       a.click();
       URL.revokeObjectURL(url);
     };
+  </script>
+
+  <!-- Secondary Background Firebase Auth Synchronization (Non-Blocking) -->
+  <script type="module">
+    try {
+      const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js");
+      const {
+        getAuth,
+        signInWithCustomToken,
+        signOut,
+        onAuthStateChanged,
+        isSignInWithEmailLink,
+        signInWithEmailLink
+      } = await import("https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js");
+
+      const firebaseConfig = {
+        apiKey: "AIzaSyDihoXXCEGIPirLVZIb4GbOtQbZ7WyLuyo",
+        authDomain: "prj-aepl-ai-inv-auto-dev.firebaseapp.com",
+        projectId: "prj-aepl-ai-inv-auto-dev"
+      };
+
+      const app = initializeApp(firebaseConfig);
+      const auth = getAuth(app);
+      window._firebaseAuth = auth;
+      window._firebaseSignOut = signOut;
+      window._firebaseSignInWithCustomToken = signInWithCustomToken;
+
+      if (isSignInWithEmailLink(auth, window.location.href)) {
+        let email = window.localStorage.getItem("emailForSignIn");
+        if (!email) {
+          email = window.prompt("Confirm your corporate email address to finalize sign-in:");
+        }
+        if (email) {
+          signInWithEmailLink(auth, email.trim().toLowerCase(), window.location.href)
+            .then(() => {
+              window.localStorage.removeItem("emailForSignIn");
+              window.history.replaceState({}, document.title, "/");
+              showToast("Welcome! Single Sign-On authenticated.");
+              fetch("/api/auth/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email: email.trim().toLowerCase() })
+              }).then(r => r.json()).then(d => {
+                if (d.token) {
+                  window.localStorage.setItem("corporate_token", d.token);
+                  window.localStorage.setItem("user_email", d.email);
+                  setAuthenticatedState(d.email, d.is_admin);
+                }
+              }).catch(() => {});
+            })
+            .catch(() => {
+              window.history.replaceState({}, document.title, "/");
+              showToast("Authentication failed or link expired.");
+            });
+        }
+      }
+
+      onAuthStateChanged(auth, async (user) => {
+        if (user) {
+          const email = (user.email || "").toLowerCase().trim();
+          const isAllowed = ALLOWED_EMAILS.includes(email) || ALLOWED_DOMAINS.some(d => email.endsWith("@" + d) || email.endsWith("." + d));
+          if (!isAllowed) {
+            await signOut(auth);
+            showToast("Account domain is not authorized.");
+            return;
+          }
+
+          let isAdmin = email === "aic1176@aurogroup.com";
+          try {
+            const idToken = await user.getIdToken();
+            const meRes = await fetch("/api/auth/me", {
+              headers: { "Authorization": "Bearer " + idToken, "X-Firebase-Token": idToken }
+            });
+            const meData = await meRes.json();
+            isAdmin = meData.is_admin || isAdmin;
+          } catch (_) {}
+
+          setAuthenticatedState(email, isAdmin);
+        }
+      });
+    } catch (fbErr) {
+      console.warn("Firebase Auth background sync notice (Corporate SSO active):", fbErr);
+    }
   </script>
 </body>
 </html>

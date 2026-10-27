@@ -1,5 +1,7 @@
 import base64
 import copy
+import hashlib
+import hmac
 import io
 import json
 import logging
@@ -812,6 +814,36 @@ def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Option
 # ---------------------------------------------------------
 # 7. AUTHENTICATION & SECURITY SCREENING
 # ---------------------------------------------------------
+SESSION_SECRET = os.getenv("SESSION_SECRET", "aepl-invoice-secure-session-secret-2026-key")
+
+def create_corporate_session_token(email: str) -> str:
+    payload = {
+        "email": email.lower().strip(),
+        "exp": int(time.time()) + 86400 * 7,
+        "is_admin": is_admin_user(email),
+    }
+    payload_json = json.dumps(payload, separators=(',', ':'))
+    payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode()
+    signature = hmac.new(SESSION_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{signature}"
+
+def verify_corporate_session_token(token: str) -> Optional[str]:
+    try:
+        parts = token.split(".")
+        if len(parts) != 2:
+            return None
+        payload_b64, signature = parts
+        expected_sig = hmac.new(SESSION_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_sig):
+            return None
+        payload_json = base64.urlsafe_b64decode(payload_b64.encode()).decode()
+        payload = json.loads(payload_json)
+        if payload.get("exp", 0) < time.time():
+            return None
+        return payload.get("email")
+    except Exception:
+        return None
+
 def verify_corporate_user(authorization: Optional[str], x_firebase_token: Optional[str]) -> str:
     token = None
     if authorization and authorization.lower().startswith("bearer "):
@@ -822,12 +854,18 @@ def verify_corporate_user(authorization: Optional[str], x_firebase_token: Option
     if not token:
         raise HTTPException(status_code=401, detail="Missing authentication session token.")
 
+    email = None
+    # 1. Attempt verification with Firebase ID Token
     try:
         decoded = firebase_auth.verify_id_token(token)
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid or expired authentication session: {exc}")
+        email = (decoded.get("email") or "").lower().strip()
+    except Exception:
+        # 2. Fallback to Corporate Session Token
+        email = verify_corporate_session_token(token)
 
-    email = (decoded.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or expired authentication session. Please sign in again.")
+
     is_allowed = email in ALLOWED_EMAILS or any(
         email.endswith(f"@{domain}") or email.endswith(f".{domain}") for domain in ALLOWED_DOMAINS
     )
@@ -1244,7 +1282,11 @@ async def process_single_invoice_document(
 
     # 4. Parse extracted JSON & inject Attachment
     try:
-        payload_dict = json.loads(response.text)
+        clean_text = (response.text or "").strip()
+        if clean_text.startswith("```"):
+            clean_text = re.sub(r"^```(?:json)?\s*", "", clean_text)
+            clean_text = re.sub(r"\s*```$", "", clean_text)
+        payload_dict = json.loads(clean_text)
         if "HeaderData" in payload_dict:
             payload_dict["HeaderData"]["Attachment"] = base64_attachment
     except Exception as parse_e:
@@ -1282,43 +1324,18 @@ async def process_single_invoice_document(
     ref_doc_no = header.get("RefDocNo")
     comp_code = header.get("CompCode")
 
-    # 5. Duplicate Invoice Detection via Firestore
+    # 5. Check Cloud Firestore for potential duplicate
     existing_dup = audit_service.find_duplicate_invoice(ref_doc_no, comp_code)
+    existing_doc = (existing_dup.get("sap_document_number") or existing_dup.get("trace_id")) if existing_dup else None
     if existing_dup:
-        existing_doc = existing_dup.get("sap_document_number") or existing_dup.get("trace_id")
-        err_info = SAPErrorTaxonomy.format_error(
-            "ERR_DUPLICATE_INVOICE",
-            ref_doc_no=ref_doc_no,
-            comp_code=comp_code or "1000",
-            existing_doc=existing_doc,
-        )
-        invoice_record = {
-            "trace_id": trace_id,
-            "filename": filename,
-            "file_size": len(content),
-            "submitted_by": user_email,
-            "status": "DUPLICATE_DETECTED",
-            "error_info": err_info,
-            "extracted_data": payload_dict,
-            "sap_document_number": None,
-            "telemetry": telemetry,
-        }
-        audit_service.save_invoice(invoice_record)
         audit_service.log_event(
-            event_type="DUPLICATE_INVOICE_DETECTED",
+            event_type="DUPLICATE_FIRESTORE_CHECK",
             user_email=user_email,
             trace_id=trace_id,
-            severity="WARNING",
-            message=f"Duplicate invoice: {ref_doc_no} already parked in SAP #{existing_doc}.",
+            severity="INFO",
+            message=f"Invoice reference '{ref_doc_no}' found in Firestore (SAP #{existing_doc}). Attempting SAP CPI dispatch before confirming pure duplicate...",
+            metadata={"ref_doc_no": ref_doc_no, "existing_doc": existing_doc},
         )
-        return {
-            "status": "DUPLICATE_DETECTED",
-            "trace_id": trace_id,
-            "filename": filename,
-            "error_info": err_info,
-            "extracted_data": payload_dict,
-            "telemetry": telemetry,
-        }
 
     # 6. Schema & Business Rules Validation
     is_valid, error_code, error_val = validate_sap_schema(payload_dict)
@@ -1443,54 +1460,99 @@ async def process_single_invoice_document(
             "telemetry": telemetry,
         }
     else:
-        err_info = SAPErrorTaxonomy.format_error("ERR_SAP_CPI_REJECTED", detail=cpi_result.get("sap_message"))
-        invoice_record = {
-            "trace_id": trace_id,
-            "filename": filename,
-            "file_size": len(content),
-            "submitted_by": user_email,
-            "status": "SAP_REJECTED",
-            "error_info": err_info,
-            "sap_document_number": None,
-            "sap_message": cpi_result.get("sap_message"),
-            "extracted_data": payload_dict,
-            "telemetry": telemetry,
-        }
-        audit_service.save_invoice(invoice_record)
-        audit_service.log_event(
-            event_type="SAP_CPI_REJECTED",
-            user_email=user_email,
-            trace_id=trace_id,
-            severity="ERROR",
-            message=f"SAP CPI rejected invoice '{filename}': {cpi_result.get('sap_message')}",
+        sap_err_msg = str(cpi_result.get("sap_message", ""))
+        is_pure_duplicate = bool(
+            existing_dup or any(w in sap_err_msg.lower() for w in ["duplicate", "already exists", "already parked", "already entered"])
         )
 
-        # TRIGGER ALERT EMAIL TO aic1176@aurogroup.com
-        alert_incident = alert_service.send_failure_alert(
-            failure_type="SAP_CPI_BAPI_REJECTION",
-            filename=filename,
-            trace_id=trace_id,
-            user_email=user_email,
-            error_title="SAP S/4HANA BAPI Rejection",
-            error_detail=str(cpi_result.get("sap_message")),
-            metadata={"sap_response": cpi_result},
-        )
+        if is_pure_duplicate:
+            # Pure duplicate confirmed: present in Firestore and SAP CPI verification rejected re-entry
+            err_info = SAPErrorTaxonomy.format_error(
+                "ERR_DUPLICATE_INVOICE",
+                ref_doc_no=ref_doc_no or "N/A",
+                comp_code=comp_code or "1000",
+                existing_doc=existing_doc or "Existing SAP Document",
+            )
+            err_info["error_message"] += f" (Verified via SAP CPI rejection: {sap_err_msg})"
+            invoice_record = {
+                "trace_id": trace_id,
+                "filename": filename,
+                "file_size": len(content),
+                "submitted_by": user_email,
+                "status": "DUPLICATE_DETECTED",
+                "error_info": err_info,
+                "sap_message": sap_err_msg,
+                "extracted_data": payload_dict,
+                "sap_document_number": None,
+                "telemetry": telemetry,
+            }
+            audit_service.save_invoice(invoice_record)
+            audit_service.log_event(
+                event_type="DUPLICATE_INVOICE_CONFIRMED",
+                user_email=user_email,
+                trace_id=trace_id,
+                severity="WARNING",
+                message=f"Pure duplicate invoice confirmed: {ref_doc_no} was found in Firestore (#{existing_doc}) and rejected by SAP CPI ({sap_err_msg}).",
+                metadata={"ref_doc_no": ref_doc_no, "existing_doc": existing_doc, "cpi_message": sap_err_msg},
+            )
+            return {
+                "status": "DUPLICATE_DETECTED",
+                "trace_id": trace_id,
+                "filename": filename,
+                "error_info": err_info,
+                "sap_message": sap_err_msg,
+                "extracted_data": payload_dict,
+                "telemetry": telemetry,
+            }
+        else:
+            err_info = SAPErrorTaxonomy.format_error("ERR_SAP_CPI_REJECTED", detail=sap_err_msg)
+            invoice_record = {
+                "trace_id": trace_id,
+                "filename": filename,
+                "file_size": len(content),
+                "submitted_by": user_email,
+                "status": "SAP_REJECTED",
+                "error_info": err_info,
+                "sap_document_number": None,
+                "sap_message": sap_err_msg,
+                "extracted_data": payload_dict,
+                "telemetry": telemetry,
+            }
+            audit_service.save_invoice(invoice_record)
+            audit_service.log_event(
+                event_type="SAP_CPI_REJECTED",
+                user_email=user_email,
+                trace_id=trace_id,
+                severity="ERROR",
+                message=f"SAP CPI rejected invoice '{filename}': {sap_err_msg}",
+            )
 
-        return {
-            "status": "SAP_REJECTED",
-            "trace_id": trace_id,
-            "filename": filename,
-            "error_info": err_info,
-            "sap_message": cpi_result.get("sap_message"),
-            "extracted_data": payload_dict,
-            "telemetry": telemetry,
-            "alert_notification": {
-                "incident_id": alert_incident.get("incident_id"),
-                "status": alert_incident.get("email_status"),
-                "recipient": alert_incident.get("recipient"),
-                "timestamp": alert_incident.get("timestamp"),
-            },
-        }
+            # TRIGGER ALERT EMAIL TO aic1176@aurogroup.com
+            alert_incident = alert_service.send_failure_alert(
+                failure_type="SAP_CPI_BAPI_REJECTION",
+                filename=filename,
+                trace_id=trace_id,
+                user_email=user_email,
+                error_title="SAP S/4HANA BAPI Rejection",
+                error_detail=sap_err_msg,
+                metadata={"sap_response": cpi_result},
+            )
+
+            return {
+                "status": "SAP_REJECTED",
+                "trace_id": trace_id,
+                "filename": filename,
+                "error_info": err_info,
+                "sap_message": sap_err_msg,
+                "extracted_data": payload_dict,
+                "telemetry": telemetry,
+                "alert_notification": {
+                    "incident_id": alert_incident.get("incident_id"),
+                    "status": alert_incident.get("email_status"),
+                    "recipient": alert_incident.get("recipient"),
+                    "timestamp": alert_incident.get("timestamp"),
+                },
+            }
 
 
 # ---------------------------------------------------------
@@ -1518,6 +1580,48 @@ async def healthz():
         "admin_email": ALERT_EMAIL_RECIPIENT,
         "allowed_domains": list(ALLOWED_DOMAINS),
     }
+
+
+@app.post("/api/auth/login")
+async def corporate_login(payload: Dict[str, Any]):
+    """
+    Direct Corporate Single Sign-On (Passwordless / Instant Access).
+    Validates corporate email against allowed enterprise domains (aurogroup.com, axisclinicals.com).
+    Issues both a Firebase Custom Token and an enterprise session token.
+    """
+    email = (payload.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="Corporate email address is required.")
+
+    is_allowed = email in ALLOWED_EMAILS or any(
+        email.endswith(f"@{domain}") or email.endswith(f".{domain}") for domain in ALLOWED_DOMAINS
+    )
+    if not is_allowed:
+        audit_service.record_auth_event(email, "FAILED", "Unauthorized domain or email address")
+        raise HTTPException(status_code=403, detail=f"Access restricted: Email '{email}' is not authorized.")
+
+    # Record successful login event in Cloud Firestore
+    audit_service.record_auth_event(email, "SUCCESS", "Corporate Instant Single Sign-On")
+
+    # Generate corporate session token
+    session_token = create_corporate_session_token(email)
+
+    # Attempt to generate Firebase Custom Token if available
+    custom_token = None
+    try:
+        raw_token = firebase_auth.create_custom_token(email, {"email": email, "is_admin": is_admin_user(email)})
+        custom_token = raw_token.decode("utf-8") if isinstance(raw_token, bytes) else str(raw_token)
+    except Exception as exc:
+        logger.warning(f"Firebase custom token generation notice: {exc}")
+
+    return JSONResponse({
+        "status": "SUCCESS",
+        "email": email,
+        "token": session_token,
+        "custom_token": custom_token,
+        "is_admin": is_admin_user(email),
+        "message": f"Welcome, {email}. Authentication successful."
+    })
 
 
 @app.get("/api/auth/me")
@@ -1797,41 +1901,79 @@ async def resolve_hitl_invoice(
             "extracted_data": extracted_data,
         })
     else:
-        err_info = SAPErrorTaxonomy.format_error("ERR_SAP_CPI_REJECTED", detail=cpi_result.get("sap_message"))
-        invoice["status"] = "SAP_REJECTED"
-        invoice["error_info"] = err_info
-        audit_service.save_invoice(invoice)
-
-        audit_service.log_event(
-            event_type="HITL_SAP_REJECTED",
-            user_email=user_email,
-            trace_id=trace_id,
-            severity="ERROR",
-            message=f"HITL resumed SAP dispatch failed: {cpi_result.get('sap_message')}",
+        sap_err_msg = str(cpi_result.get("sap_message", ""))
+        ref_doc_no = header.get("RefDocNo")
+        comp_code = header.get("CompCode")
+        existing_dup = audit_service.find_duplicate_invoice(ref_doc_no, comp_code)
+        is_pure_duplicate = bool(
+            (existing_dup and existing_dup.get("trace_id") != trace_id) or
+            any(w in sap_err_msg.lower() for w in ["duplicate", "already exists", "already parked", "already entered"])
         )
 
-        alert_incident = alert_service.send_failure_alert(
-            failure_type="HITL_RESUMED_SAP_REJECTION",
-            filename=invoice.get("filename", "unknown"),
-            trace_id=trace_id,
-            user_email=user_email,
-            error_title="HITL Resumed SAP BAPI Rejection",
-            error_detail=str(cpi_result.get("sap_message")),
-        )
+        if is_pure_duplicate:
+            existing_doc = (existing_dup.get("sap_document_number") or existing_dup.get("trace_id")) if existing_dup else "Existing Document"
+            err_info = SAPErrorTaxonomy.format_error(
+                "ERR_DUPLICATE_INVOICE",
+                ref_doc_no=ref_doc_no or "N/A",
+                comp_code=comp_code or "1000",
+                existing_doc=existing_doc,
+            )
+            err_info["error_message"] += f" (Verified via SAP CPI rejection: {sap_err_msg})"
+            invoice["status"] = "DUPLICATE_DETECTED"
+            invoice["error_info"] = err_info
+            invoice["sap_message"] = sap_err_msg
+            audit_service.save_invoice(invoice)
+            audit_service.log_event(
+                event_type="HITL_DUPLICATE_CONFIRMED",
+                user_email=user_email,
+                trace_id=trace_id,
+                severity="WARNING",
+                message=f"HITL resumed SAP dispatch confirmed duplicate: {ref_doc_no} (Document #{existing_doc}) rejected by SAP CPI.",
+                metadata={"ref_doc_no": ref_doc_no, "existing_doc": existing_doc, "cpi_message": sap_err_msg},
+            )
+            return JSONResponse(status_code=422, content={
+                "status": "DUPLICATE_DETECTED",
+                "trace_id": trace_id,
+                "error_info": err_info,
+                "sap_message": sap_err_msg,
+                "extracted_data": extracted_data,
+            })
+        else:
+            err_info = SAPErrorTaxonomy.format_error("ERR_SAP_CPI_REJECTED", detail=sap_err_msg)
+            invoice["status"] = "SAP_REJECTED"
+            invoice["error_info"] = err_info
+            audit_service.save_invoice(invoice)
 
-        return JSONResponse(status_code=422, content={
-            "status": "SAP_REJECTED",
-            "trace_id": trace_id,
-            "error_info": err_info,
-            "sap_message": cpi_result.get("sap_message"),
-            "extracted_data": extracted_data,
-            "alert_notification": {
-                "incident_id": alert_incident.get("incident_id"),
-                "status": alert_incident.get("email_status"),
-                "recipient": alert_incident.get("recipient"),
-                "timestamp": alert_incident.get("timestamp"),
-            },
-        })
+            audit_service.log_event(
+                event_type="HITL_SAP_REJECTED",
+                user_email=user_email,
+                trace_id=trace_id,
+                severity="ERROR",
+                message=f"HITL resumed SAP dispatch failed: {sap_err_msg}",
+            )
+
+            alert_incident = alert_service.send_failure_alert(
+                failure_type="HITL_RESUMED_SAP_REJECTION",
+                filename=invoice.get("filename", "unknown"),
+                trace_id=trace_id,
+                user_email=user_email,
+                error_title="HITL Resumed SAP BAPI Rejection",
+                error_detail=sap_err_msg,
+            )
+
+            return JSONResponse(status_code=422, content={
+                "status": "SAP_REJECTED",
+                "trace_id": trace_id,
+                "error_info": err_info,
+                "sap_message": sap_err_msg,
+                "extracted_data": extracted_data,
+                "alert_notification": {
+                    "incident_id": alert_incident.get("incident_id"),
+                    "status": alert_incident.get("email_status"),
+                    "recipient": alert_incident.get("recipient"),
+                    "timestamp": alert_incident.get("timestamp"),
+                },
+            })
 
 
 # ---------------------------------------------------------
