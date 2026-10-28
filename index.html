@@ -2176,7 +2176,7 @@
               trayTag.style.background = "var(--warning-light)";
               trayTag.style.color = "var(--warning)";
               hitlCount++;
-              showToast(`[${i+1}/${selectedFiles.length}] ${f.name}: Missing PO or SES - Review Required`);
+              showToast(`[${i+1}/${selectedFiles.length}] ${f.name}: ${result.error_info?.error_title || "PO Review Required"}`);
             } else if (result.status === "SAP_REJECTED") {
               trayTag.innerText = "SAP Rejected ⚠";
               trayTag.style.background = "#ffedd5";
@@ -2498,7 +2498,7 @@
                 <line x1="12" y1="8" x2="12" y2="12"></line>
                 <line x1="12" y1="16" x2="12.01" y2="16"></line>
               </svg>
-              <span>${err.error_title || (isRejected ? "SAP S/4HANA Rejection - PO/SES Review" : "Action Required: Missing PO Number")}</span>
+              <span>${err.error_title || (isRejected ? "SAP S/4HANA Rejection - PO Review" : "Action Required: Missing PO Number")}</span>
             </div>
             <div class="hitl-alert-msg" style="${isRejected ? 'color:#9a3412;' : ''}">
               ${err.error_message || data.sap_message || "Mandatory Purchase Order required by SAP S/4HANA is missing."}

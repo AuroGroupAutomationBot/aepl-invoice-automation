@@ -1194,6 +1194,8 @@ def enforce_sap_abap_typing(obj, parent_key=""):
         for k, v in obj.items():
             if k in numeric_fields and v is None:
                 cleaned[k] = 0.00
+            elif k == "SES" and (v is None or str(v).strip().lower() in ("", "null", "none")):
+                cleaned[k] = None
             else:
                 cleaned[k] = enforce_sap_abap_typing(v, k)
         return cleaned
@@ -1221,8 +1223,8 @@ def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Option
     """
     Validates against the notebook's baseline schema and applies strict SAP Regex rules:
     - PONumber: Mandatory, exactly 10 digits
-    - SES: If missing or unavailable, routes to HITL (Only PO is mandatory for final parking)
-    - SES: If provided, must be exactly 10 digits starting with 1
+    - SES: OPTIONAL (Only PO is Mandatory per specification).
+           If SES is provided, it must be exactly 10 digits starting with 1.
     - TaxableVal: Must be > 0
     - TotalInvVal: Must be > 0
     """
@@ -1232,27 +1234,37 @@ def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Option
     taxable_val = header.get("TaxableVal")
     total_inv_val = header.get("TotalInvVal")
 
-    # 1. Missing or Invalid PO Number per notebook regex
+    # 1. Missing or Invalid PO Number per notebook regex (PO is Mandatory)
     if not po_number or str(po_number).strip().lower() in ("null", "none", ""):
         return False, "ERR_MISSING_PO", None
 
     if not re.match(r"^\d{10}$", str(po_number).strip()):
         return False, "ERR_INVALID_PO", str(po_number).strip()
 
-    # 2. Missing SES Number: Routes to HITL per specification
-    if not ses_number or str(ses_number).strip().lower() in ("null", "none", ""):
-        return False, "ERR_MISSING_SES", None
+    # 2. SES Number is OPTIONAL (Only PO is Mandatory per specification).
+    # If SES is provided, it must be exactly 10 digits starting with 1.
+    if ses_number is not None and str(ses_number).strip().lower() not in ("null", "none", ""):
+        ses_str = str(ses_number).strip()
+        if not re.match(r"^1\d{9}$", ses_str):
+            return False, "ERR_INVALID_SES", ses_str
+    else:
+        # Normalize to None for clean SAP BAPI serialization
+        header["SES"] = None
 
-    # 3. Invalid SES Number if present
-    if not re.match(r"^1\d{9}$", str(ses_number).strip()):
-        return False, "ERR_INVALID_SES", str(ses_number).strip()
+    # 3. Value Validations per notebook
+    if taxable_val is not None:
+        try:
+            if float(taxable_val) <= 0:
+                return False, "ERR_TAXABLE_VAL_ZERO", None
+        except (ValueError, TypeError):
+            return False, "ERR_TAXABLE_VAL_ZERO", None
 
-    # 4. Value Validations per notebook
-    if taxable_val is None or float(taxable_val) <= 0:
-        return False, "ERR_TAXABLE_VAL_ZERO", None
-
-    if total_inv_val is None or float(total_inv_val) <= 0:
-        return False, "ERR_TOTAL_VAL_ZERO", None
+    if total_inv_val is not None:
+        try:
+            if float(total_inv_val) <= 0:
+                return False, "ERR_TOTAL_VAL_ZERO", None
+        except (ValueError, TypeError):
+            return False, "ERR_TOTAL_VAL_ZERO", None
 
     return True, None, None
 
@@ -2749,12 +2761,14 @@ async def resolve_hitl_invoice(
     # Validate SES (Optional: if provided, must be 10 digits starting with 1)
     if "SES" in corrections:
         ses_raw = str(corrections.get("SES") or "").strip()
-        if ses_raw:
+        if ses_raw and ses_raw.lower() not in ("null", "none", ""):
             if not re.match(r"^1\d{9}$", ses_raw):
                 raise HTTPException(status_code=422, detail=f"Invalid SES Number '{ses_raw}'. Service Entry Sheet must be a 10-digit number starting with 1 (e.g. 1000123456).")
             header["SES"] = ses_raw
         else:
             header["SES"] = None
+    elif not header.get("SES") or str(header.get("SES")).strip().lower() in ("null", "none", ""):
+        header["SES"] = None
 
     # NOTE: All other fields (RefDocNo, CompCode, DocDate, BusinessPlace, TaxableVal, TotalInvVal, ItemData)
     # remain strictly locked as originally extracted and cannot be altered.
