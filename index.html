@@ -1037,60 +1037,251 @@
   <!-- Main Work Surface -->
   <main class="app-main">
 
-    <!-- View 0: Corporate Single Sign-On (Passwordless) -->
+    <!-- View 0: Enterprise Authentication Gateway -->
     <div class="portal-card" id="loginCard">
       <div class="portal-body">
-        <h1 class="page-title">Enterprise Single Sign-On</h1>
+        <h1 class="page-title">Enterprise Authentication Gateway</h1>
         <p class="page-description">
-          Enter your authorized corporate email (@aurogroup.com, @axisclinicals.com) to receive a secure passwordless sign-in link in your corporate inbox.
+          Sign in with your corporate username or email address and password. Protected with PBKDF2-HMAC-SHA512 encryption, sliding-window rate limiting, and NIST SP 800-63B security controls.
         </p>
 
         <div class="auth-form-wrap" id="loginFormWrap">
-          <form onsubmit="event.preventDefault(); handleLogin();">
-            <label class="form-label" for="emailInput">Corporate Email Address</label>
-            <div class="auth-input-group">
+          <form onsubmit="event.preventDefault(); handlePasswordLogin();">
+            <div style="margin-bottom:14px;">
+              <label class="form-label" for="authIdentifierInput">Corporate Username or Email Address</label>
               <input
-                type="email"
-                id="emailInput"
+                type="text"
+                id="authIdentifierInput"
                 class="corporate-input"
-                placeholder="name@aurogroup.com"
-                autocomplete="email"
-                inputmode="email"
+                placeholder="aic1176@aurogroup.com or username"
+                autocomplete="username"
                 autocapitalize="none"
                 spellcheck="false"
                 required
+                style="width:100%; box-sizing:border-box;"
               />
-              <button type="submit" class="btn-primary" id="sendLinkBtn">
-                <span>Send Login Link</span>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13"></line>
-                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                </svg>
-              </button>
             </div>
+
+            <div style="margin-bottom:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <label class="form-label" for="authPasswordInput" style="margin-bottom:0;">Password</label>
+                <a href="javascript:void(0)" onclick="openForgotPasswordModal()" style="font-size:12px; color:var(--primary); font-weight:600; text-decoration:none;">Forgot Password?</a>
+              </div>
+              <div style="position:relative; display:flex; align-items:center;">
+                <input
+                  type="password"
+                  id="authPasswordInput"
+                  class="corporate-input"
+                  placeholder="Enter your corporate password"
+                  autocomplete="current-password"
+                  required
+                  style="width:100%; box-sizing:border-box; padding-right:42px;"
+                />
+                <button
+                  type="button"
+                  id="togglePasswordBtn"
+                  onclick="togglePasswordVisibility('authPasswordInput', 'eyeIconLogin')"
+                  style="position:absolute; right:10px; background:none; border:none; color:var(--slate-400); cursor:pointer; padding:4px;"
+                  title="Show/Hide Password"
+                >
+                  <svg id="eyeIconLogin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" class="btn-primary" id="signInBtn" style="width:100%; padding:12px; font-size:15px;">
+              <span>Sign In with Enterprise ID</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="15" y1="3" x2="21" y2="3"></line>
+                <line x1="21" y1="3" x2="21" y2="9"></line>
+                <line x1="10" y1="14" x2="21" y2="3"></line>
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              </svg>
+            </button>
           </form>
 
-          <!-- Admin Quick Sign-In Option -->
-          <div style="margin-top:14px; padding:12px 14px; background:var(--slate-50); border:1px solid var(--slate-200); border-radius:6px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
-            <div style="font-size:12px; color:var(--slate-700); display:flex; align-items:center; gap:8px;">
-              <span class="admin-badge">ADMIN</span>
-              <span>Designated Administrator: <strong>aic1176@aurogroup.com</strong></span>
+          <!-- Predefined Corporate Accounts Quick Select (For Ease of Testing / Demonstration) -->
+          <div style="margin-top:20px; padding:14px; background:var(--slate-50); border:1px solid var(--slate-200); border-radius:8px;">
+            <div style="font-size:12px; font-weight:700; color:var(--slate-700); margin-bottom:8px; display:flex; align-items:center; justify-content:space-between;">
+              <span>Authorized Corporate Accounts</span>
+              <span style="font-size:11px; color:var(--slate-500); font-weight:normal;">Click account to fill</span>
             </div>
-            <button type="button" class="btn-secondary" style="font-size:11px; padding:5px 12px; font-weight:600;" onclick="quickLoginAdmin()">
-              Send Admin Link
-            </button>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              <button
+                type="button"
+                onclick="fillLoginCredentials('aic1176@aurogroup.com', 'AuroAdmin@2026!')"
+                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
+              >
+                <div style="font-size:12px; color:var(--slate-800);">
+                  <strong>aic1176@aurogroup.com</strong> <span style="color:var(--slate-500);">(AEPL Administrator)</span>
+                </div>
+                <span class="admin-badge">ADMIN</span>
+              </button>
+              <button
+                type="button"
+                onclick="fillLoginCredentials('hasith.g@aurogroup.com', 'AuroUser@2026!')"
+                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
+              >
+                <div style="font-size:12px; color:var(--slate-800);">
+                  <strong>hasith.g@aurogroup.com</strong> <span style="color:var(--slate-500);">(Hasith G)</span>
+                </div>
+                <span style="background:#f1f5f9; color:#475569; font-size:10px; font-weight:700; padding:2px 6px; border-radius:3px;">USER</span>
+              </button>
+              <button
+                type="button"
+                onclick="fillLoginCredentials('abigna.k@aurogroup.com', 'AuroUser@2026!')"
+                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
+              >
+                <div style="font-size:12px; color:var(--slate-800);">
+                  <strong>abigna.k@aurogroup.com</strong> <span style="color:var(--slate-500);">(Abigna K)</span>
+                </div>
+                <span style="background:#f1f5f9; color:#475569; font-size:10px; font-weight:700; padding:2px 6px; border-radius:3px;">USER</span>
+              </button>
+              <button
+                type="button"
+                onclick="fillLoginCredentials('mohithsai.g@axisclinicals.com', 'AuroUser@2026!')"
+                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
+              >
+                <div style="font-size:12px; color:var(--slate-800);">
+                  <strong>mohithsai.g@axisclinicals.com</strong> <span style="color:var(--slate-500);">(Mohith Sai G)</span>
+                </div>
+                <span style="background:#f1f5f9; color:#475569; font-size:10px; font-weight:700; padding:2px 6px; border-radius:3px;">USER</span>
+              </button>
+              <button
+                type="button"
+                onclick="fillLoginCredentials('prasanna.j@aurorealty.com', 'AuroUser@2026!')"
+                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
+              >
+                <div style="font-size:12px; color:var(--slate-800);">
+                  <strong>prasanna.j@aurorealty.com</strong> <span style="color:var(--slate-500);">(Prasanna J)</span>
+                </div>
+                <span style="background:#f1f5f9; color:#475569; font-size:10px; font-weight:700; padding:2px 6px; border-radius:3px;">USER</span>
+              </button>
+            </div>
           </div>
 
-          <div style="margin-top:10px; font-size:12px; color:var(--slate-400); display:flex; align-items:center; gap:6px;">
+          <div style="margin-top:12px; font-size:12px; color:var(--slate-400); display:flex; align-items:center; gap:6px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
-            <span>Passwordless email verification link enforced (Audited in Cloud Firestore, Mumbai)</span>
+            <span>Password Recovery &amp; Critical Alerts routed strictly via Microsoft Power Automate Webhook</span>
           </div>
         </div>
 
         <div id="loginStatus" style="display:none; margin-top:16px;"></div>
+      </div>
+    </div>
+
+    <!-- Forgot Password Modal -->
+    <div id="forgotPasswordModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.6); z-index:9999; align-items:center; justify-content:center;">
+      <div style="background:#ffffff; border-radius:8px; max-width:460px; width:90%; padding:24px; box-shadow:0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04); position:relative;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <h3 style="margin:0; font-size:17px; font-weight:700; color:var(--slate-900);">Password Recovery</h3>
+          <button type="button" onclick="closeForgotPasswordModal()" style="background:none; border:none; cursor:pointer; color:var(--slate-400); font-size:20px; line-height:1;">&times;</button>
+        </div>
+        <p style="font-size:13px; color:var(--slate-600); margin:0 0 16px 0; line-height:1.5;">
+          Enter your registered username or corporate email address. A single-use, 15-minute secure password reset link will be dispatched to your inbox via the <strong>AEPL Power Automate Gateway</strong>.
+        </p>
+        <form onsubmit="event.preventDefault(); submitForgotPassword();">
+          <div style="margin-bottom:14px;">
+            <label class="form-label" for="forgotIdentifierInput">Username or Corporate Email</label>
+            <input
+              type="text"
+              id="forgotIdentifierInput"
+              class="corporate-input"
+              placeholder="e.g. hasith.g@aurogroup.com"
+              required
+              style="width:100%; box-sizing:border-box;"
+            />
+          </div>
+          <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:18px;">
+            <button type="button" class="btn-secondary" onclick="closeForgotPasswordModal()">Cancel</button>
+            <button type="submit" class="btn-primary" id="btnSubmitForgot">
+              <span>Send Recovery Link via Power Automate</span>
+            </button>
+          </div>
+        </form>
+        <div id="forgotStatusMsg" style="display:none; margin-top:14px;"></div>
+      </div>
+    </div>
+
+    <!-- View 0B: Password Reset Screen (Triggered by ?action=reset-password&token=...) -->
+    <div class="portal-card" id="resetPasswordCard" style="display:none;">
+      <div class="portal-body">
+        <h1 class="page-title">Set New Password</h1>
+        <p class="page-description">
+          Create a secure new password for your AEPL SAP Engine account. Must comply with NIST SP 800-63B guidelines.
+        </p>
+
+        <div class="auth-form-wrap">
+          <form onsubmit="event.preventDefault(); submitNewPassword();">
+            <div style="margin-bottom:14px;">
+              <label class="form-label" for="newPasswordInput">New Password</label>
+              <div style="position:relative; display:flex; align-items:center;">
+                <input
+                  type="password"
+                  id="newPasswordInput"
+                  class="corporate-input"
+                  placeholder="Enter new password"
+                  required
+                  oninput="checkPasswordComplexity(this.value)"
+                  style="width:100%; box-sizing:border-box; padding-right:42px;"
+                />
+                <button
+                  type="button"
+                  onclick="togglePasswordVisibility('newPasswordInput', 'eyeIconReset1')"
+                  style="position:absolute; right:10px; background:none; border:none; color:var(--slate-400); cursor:pointer; padding:4px;"
+                >
+                  <svg id="eyeIconReset1" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- NIST Complexity Meter -->
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:12px; margin-bottom:14px; font-size:12px;">
+              <div style="font-weight:600; color:var(--slate-700); margin-bottom:6px;">NIST SP 800-63B Complexity Requirements:</div>
+              <div id="ruleLength" style="color:#94a3b8; display:flex; align-items:center; gap:6px; margin-bottom:3px;">
+                <span>• At least 8 characters in length</span>
+              </div>
+              <div id="ruleUpper" style="color:#94a3b8; display:flex; align-items:center; gap:6px; margin-bottom:3px;">
+                <span>• At least one uppercase letter (A-Z)</span>
+              </div>
+              <div id="ruleLower" style="color:#94a3b8; display:flex; align-items:center; gap:6px; margin-bottom:3px;">
+                <span>• At least one lowercase letter (a-z)</span>
+              </div>
+              <div id="ruleDigit" style="color:#94a3b8; display:flex; align-items:center; gap:6px; margin-bottom:3px;">
+                <span>• At least one numeric digit (0-9)</span>
+              </div>
+              <div id="ruleSpecial" style="color:#94a3b8; display:flex; align-items:center; gap:6px;">
+                <span>• At least one special symbol (!@#$%^&amp;* etc.)</span>
+              </div>
+            </div>
+
+            <div style="margin-bottom:18px;">
+              <label class="form-label" for="confirmPasswordInput">Confirm New Password</label>
+              <input
+                type="password"
+                id="confirmPasswordInput"
+                class="corporate-input"
+                placeholder="Re-enter new password"
+                required
+                style="width:100%; box-sizing:border-box;"
+              />
+            </div>
+
+            <button type="submit" class="btn-primary" id="btnSubmitReset" style="width:100%; padding:12px;">
+              <span>Update Password &amp; Sign In</span>
+            </button>
+          </form>
+          <div id="resetStatusMsg" style="display:none; margin-top:14px;"></div>
+        </div>
       </div>
     </div>
 
@@ -1180,7 +1371,7 @@
           </button>
         </div>
         <p class="page-description">
-          Invoices missing mandatory information (such as Purchase Order Number, Service Entry Sheet, or Delivery Note) are routed here. <strong>Any authorized user or the document uploader</strong> can enter or correct the missing values inline, validate them against SAP guardrails, and resume parking directly to SAP S/4HANA without administrator escalation.
+          Invoices missing mandatory information (such as 10-digit Purchase Order) or flagged for review (irrelevant documents) are routed here. Standard users can view/resolve their own uploads; Administrator can review all. <strong>Only PO and SES are editable; all other attributes are locked</strong>. For irrelevant documents, confirm and discard with one click.
         </p>
 
         <div id="hitlQueueContainer"></div>
@@ -1191,13 +1382,19 @@
     <div class="portal-card" id="viewMIS" style="display:none;">
       <div class="portal-body">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:10px;">
-          <h1 class="page-title" style="margin-bottom:0;">Admin MIS &amp; Processing Telemetry</h1>
-          <button class="btn-secondary" onclick="loadMISDashboard()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
-            </svg>
-            <span>Refresh Telemetry</span>
-          </button>
+          <h1 class="page-title" style="margin-bottom:0;">Enterprise MIS &amp; Processing Telemetry</h1>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <button id="btnTriggerMonthlyMIS" class="btn-primary" style="display:none; font-size:12px; padding:7px 14px; background:#047857;" onclick="triggerMonthlyMISReport()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+              <span>Dispatch Monthly MIS via Power Automate</span>
+            </button>
+            <button class="btn-secondary" onclick="loadMISDashboard()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+              </svg>
+              <span>Refresh Telemetry</span>
+            </button>
+          </div>
         </div>
         <p class="page-description">
           Real-time enterprise dashboard tracking end-to-end invoice processing, user authentication events, validation failures, duplicate invoices, and complete Cloud Firestore audit records.
@@ -1448,176 +1645,302 @@
     }
     window.getCurrentUserEmail = getCurrentUserEmail;
 
-    function setAuthenticatedState(email, isAdmin) {
+    function setAuthenticatedState(email, isAdmin, fullName) {
       const loginCard = document.getElementById("loginCard");
+      const resetCard = document.getElementById("resetPasswordCard");
       const portalNav = document.getElementById("portalNav");
       const userPill = document.getElementById("userPill");
       const userEmailText = document.getElementById("userEmailText");
       const adminBadge = document.getElementById("adminBadge");
+      const btnMonthlyMIS = document.getElementById("btnTriggerMonthlyMIS");
 
-      if (userEmailText) userEmailText.innerText = email;
+      if (userEmailText) userEmailText.innerText = fullName ? `${fullName} (${email})` : email;
+      const isActualAdmin = (isAdmin || email === "aic1176@aurogroup.com");
       if (adminBadge) {
-        if (isAdmin || email === "aic1176@aurogroup.com") {
+        if (isActualAdmin) {
+          adminBadge.innerText = "ADMIN";
           adminBadge.style.display = "inline-block";
+          adminBadge.style.background = "#0284c7";
+          adminBadge.style.color = "#ffffff";
         } else {
-          adminBadge.style.display = "none";
+          adminBadge.innerText = "USER";
+          adminBadge.style.display = "inline-block";
+          adminBadge.style.background = "#e2e8f0";
+          adminBadge.style.color = "#475569";
         }
+      }
+      if (btnMonthlyMIS) {
+        btnMonthlyMIS.style.display = isActualAdmin ? "inline-flex" : "none";
       }
 
       if (userPill) userPill.style.display = "flex";
       if (portalNav) portalNav.style.display = "flex";
       if (loginCard) loginCard.style.display = "none";
+      if (resetCard) resetCard.style.display = "none";
       switchTab(currentTab || "upload");
       updateHITLBadge();
     }
 
-    // Quick Login as Admin
-    window.resetLoginForm = () => {
+    // Fill credentials helper
+    window.fillLoginCredentials = (ident, pwd) => {
+      const idInput = document.getElementById("authIdentifierInput");
+      const pwdInput = document.getElementById("authPasswordInput");
+      if (idInput) idInput.value = ident;
+      if (pwdInput) pwdInput.value = pwd;
+    };
+
+    // Toggle password visibility
+    window.togglePasswordVisibility = (inputId, iconId) => {
+      const input = document.getElementById(inputId);
+      const icon = document.getElementById(iconId);
+      if (!input) return;
+      if (input.type === "password") {
+        input.type = "text";
+        if (icon) {
+          icon.innerHTML = `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line>`;
+        }
+      } else {
+        input.type = "password";
+        if (icon) {
+          icon.innerHTML = `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>`;
+        }
+      }
+    };
+
+    // Enterprise Password Authentication Gateway
+    window.handlePasswordLogin = async () => {
+      const idInput = document.getElementById("authIdentifierInput");
+      const pwdInput = document.getElementById("authPasswordInput");
+      const signInBtn = document.getElementById("signInBtn");
       const statusEl = document.getElementById("loginStatus");
-      const formWrap = document.getElementById("loginFormWrap");
+
+      const identifier = (idInput?.value || "").trim().toLowerCase();
+      const password = pwdInput?.value || "";
+
+      if (!identifier || !password) {
+        showToast("Please enter both username/email and password.");
+        return;
+      }
+
+      if (signInBtn) {
+        signInBtn.disabled = true;
+        signInBtn.innerText = "Authenticating...";
+      }
       if (statusEl) statusEl.style.display = "none";
-      if (formWrap) formWrap.style.display = "block";
-      const sendBtn = document.getElementById("sendLinkBtn");
-      if (sendBtn) {
-        sendBtn.disabled = false;
-        sendBtn.innerHTML = `<span>Send Login Link</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>`;
-      }
-    };
-
-    window.quickLoginAdmin = () => {
-      const emailInput = document.getElementById("emailInput");
-      emailInput.value = "aic1176@aurogroup.com";
-      window.handleLogin();
-    };
-
-    // Corporate Single Sign-On (Secure Magic Link Dispatch)
-    window.handleLogin = async () => {
-      const emailInput = document.getElementById("emailInput");
-      const sendBtn = document.getElementById("sendLinkBtn");
-      const userEmail = (emailInput.value || "").trim().toLowerCase();
-
-      if (!userEmail) {
-        showToast("Please enter a valid corporate email.");
-        return;
-      }
-
-      const isAllowed = ALLOWED_EMAILS.includes(userEmail) || ALLOWED_DOMAINS.some(d => userEmail.endsWith("@" + d) || userEmail.endsWith("." + d));
-      if (!isAllowed) {
-        showToast("Access restricted: Email domain not authorized.");
-        fetch("/api/auth/record-login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: userEmail, status: "FAILED", reason: "Unauthorized domain attempt" })
-        }).catch(() => {});
-        return;
-      }
-
-      sendBtn.disabled = true;
-      sendBtn.innerText = "Dispatching Link...";
 
       try {
-        // 1. Dispatch secure single-use magic link via backend (Power Automate & Firestore)
-        const res = await fetch("/api/auth/send-magic-link", {
+        const res = await fetch("/api/auth/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: userEmail, redirect_origin: window.location.origin })
+          body: JSON.stringify({ identifier, password }),
         });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || "Failed to dispatch authentication link.");
-        }
 
-        // 2. Also dispatch via Firebase Auth if client SDK is loaded
-        if (window._firebaseAuth && window._firebaseSendSignInLinkToEmail) {
-          try {
-            const actionCodeSettings = { url: window.location.origin + "/", handleCodeInApp: true };
-            await window._firebaseSendSignInLinkToEmail(window._firebaseAuth, userEmail, actionCodeSettings);
-          } catch (fbLinkErr) {
-            console.warn("Firebase client link note:", fbLinkErr);
+        const data = await res.json();
+        if (res.ok && data.status === "SUCCESS") {
+          window.localStorage.setItem("corporate_token", data.token);
+          window.localStorage.setItem("user_email", data.email);
+          window.localStorage.setItem("user_name", data.full_name || data.username);
+          window.localStorage.setItem("is_admin", data.is_admin ? "true" : "false");
+
+          setAuthenticatedState(data.email, data.is_admin, data.full_name);
+          showToast(`Welcome! Authenticated as ${data.full_name || data.email}`);
+
+          if (data.custom_token && window._firebaseSignInWithCustomToken && window._firebaseAuth) {
+            window._firebaseSignInWithCustomToken(window._firebaseAuth, data.custom_token).catch(() => {});
+          }
+        } else {
+          const detail = data.detail || "Authentication failed. Please verify credentials.";
+          showToast(detail);
+          if (statusEl) {
+            statusEl.style.display = "block";
+            statusEl.innerHTML = `
+              <div style="background:#fef2f2; border:1px solid #fecaca; border-radius:6px; padding:12px; color:#b91c1c; font-size:13px;">
+                <strong>Sign-in Failed:</strong> ${detail}
+              </div>
+            `;
           }
         }
-        window.localStorage.setItem("emailForSignIn", userEmail);
-
-        // 3. Update UI to prominent check email state (Does NOT log in directly)
-        const formWrap = document.getElementById("loginFormWrap");
-        const statusEl = document.getElementById("loginStatus");
-        if (formWrap) formWrap.style.display = "none";
-        if (statusEl) {
-          statusEl.style.display = "block";
-          statusEl.innerHTML = `
-            <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:24px; text-align:center;">
-              <div style="width:48px; height:48px; background:#16a34a; color:#fff; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; margin:0 auto 14px auto;">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
-              </div>
-              <h3 style="color:#15803d; margin:0 0 8px 0; font-size:17px; font-weight:700;">Check Your Corporate Email</h3>
-              <p style="color:#374151; font-size:14px; margin:0 0 16px 0;">
-                A single-use passwordless sign-in link has been sent to <strong>${userEmail}</strong>.
-              </p>
-              <div style="font-size:12px; color:#475569; background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; padding:12px; margin-bottom:18px; text-align:left; line-height:1.6;">
-                &bull; Check your <strong>Outlook / Office 365 inbox</strong> at <code>${userEmail}</code>.<br>
-                &bull; Click the link inside the email to securely verify your identity and enter the portal.<br>
-                &bull; For security, this link expires in <strong>15 minutes</strong> and can only be used once.
-              </div>
-              <button type="button" class="btn-secondary" onclick="resetLoginForm()" style="font-size:12px; padding:6px 14px;">
-                Use a different email
-              </button>
-            </div>
-          `;
-        }
-        showToast("Secure login link sent to " + userEmail);
       } catch (err) {
-        console.error("Login dispatch error:", err);
-        showToast(err.message || "Failed to send link. Please verify your email.");
-        resetLoginForm();
+        showToast("Connection error during login: " + err.message);
+      } finally {
+        if (signInBtn) {
+          signInBtn.disabled = false;
+          signInBtn.innerHTML = `<span>Sign In with Enterprise ID</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="15" y1="3" x2="21" y2="3"></line><line x1="21" y1="3" x2="21" y2="9"></line><line x1="10" y1="14" x2="21" y2="3"></line><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>`;
+        }
       }
     };
 
-    // Check for Magic Link Token in URL on page load
-    (function checkUrlMagicLink() {
-      const urlParams = new URLSearchParams(window.location.search);
-      const magicToken = urlParams.get("magic_link_token");
-      const magicEmail = urlParams.get("email");
+    // Forgot Password Modal Handlers
+    window.openForgotPasswordModal = () => {
+      const modal = document.getElementById("forgotPasswordModal");
+      const msg = document.getElementById("forgotStatusMsg");
+      const inp = document.getElementById("forgotIdentifierInput");
+      if (inp) inp.value = document.getElementById("authIdentifierInput")?.value || "";
+      if (msg) msg.style.display = "none";
+      if (modal) modal.style.display = "flex";
+    };
 
-      if (magicToken && magicEmail) {
-        const statusEl = document.getElementById("loginStatus");
-        const formWrap = document.getElementById("loginFormWrap");
-        if (formWrap) formWrap.style.display = "none";
-        if (statusEl) {
-          statusEl.style.display = "block";
-          statusEl.innerHTML = `
-            <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:24px; text-align:center;">
-              <h3 style="color:#0f172a; margin:0 0 8px 0; font-size:16px;">Verifying Single Sign-On...</h3>
-              <p style="color:#64748b; font-size:13px; margin:0;">Authenticating cryptographic token for <strong>${magicEmail}</strong>...</p>
+    window.closeForgotPasswordModal = () => {
+      const modal = document.getElementById("forgotPasswordModal");
+      if (modal) modal.style.display = "none";
+    };
+
+    window.submitForgotPassword = async () => {
+      const inp = document.getElementById("forgotIdentifierInput");
+      const btn = document.getElementById("btnSubmitForgot");
+      const statusMsg = document.getElementById("forgotStatusMsg");
+
+      const identifier = (inp?.value || "").trim().toLowerCase();
+      if (!identifier) {
+        showToast("Please enter your username or corporate email.");
+        return;
+      }
+
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = "Dispatching via Power Automate...";
+      }
+
+      try {
+        const res = await fetch("/api/auth/forgot-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ identifier, redirect_origin: window.location.origin }),
+        });
+        const data = await res.json();
+        if (statusMsg) {
+          statusMsg.style.display = "block";
+          statusMsg.innerHTML = `
+            <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:12px; color:#15803d; font-size:12px; line-height:1.5;">
+              <strong>Power Automate Triggered:</strong> ${data.message}
             </div>
           `;
         }
-        fetch("/api/auth/verify-magic-link", {
+        showToast("Recovery link dispatched via Power Automate.");
+      } catch (err) {
+        showToast("Failed to request reset: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = "Send Recovery Link via Power Automate";
+        }
+      }
+    };
+
+    // Live NIST Password Complexity Checker
+    window.checkPasswordComplexity = (pwd) => {
+      const hasLen = pwd.length >= 8;
+      const hasUpper = /[A-Z]/.test(pwd);
+      const hasLower = /[a-z]/.test(pwd);
+      const hasDigit = /\d/.test(pwd);
+      const hasSpecial = /[!@#$%^&*(),.?":{}|<>]/.test(pwd);
+
+      const updateRule = (id, valid) => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.style.color = valid ? "#16a34a" : "#94a3b8";
+          el.style.fontWeight = valid ? "600" : "normal";
+        }
+      };
+
+      updateRule("ruleLength", hasLen);
+      updateRule("ruleUpper", hasUpper);
+      updateRule("ruleLower", hasLower);
+      updateRule("ruleDigit", hasDigit);
+      updateRule("ruleSpecial", hasSpecial);
+    };
+
+    // Submit New Password after Reset Token verification
+    window.submitNewPassword = async () => {
+      const pwdInput = document.getElementById("newPasswordInput");
+      const confirmInput = document.getElementById("confirmPasswordInput");
+      const btn = document.getElementById("btnSubmitReset");
+      const msgEl = document.getElementById("resetStatusMsg");
+
+      const newPwd = pwdInput?.value || "";
+      const confirmPwd = confirmInput?.value || "";
+
+      if (newPwd !== confirmPwd) {
+        showToast("Passwords do not match. Please re-enter.");
+        return;
+      }
+      if (newPwd.length < 8 || !/[A-Z]/.test(newPwd) || !/[a-z]/.test(newPwd) || !/\d/.test(newPwd) || !/[!@#$%^&*(),.?":{}|<>]/.test(newPwd)) {
+        showToast("Password does not meet NIST complexity criteria.");
+        return;
+      }
+
+      const urlParams = new URLSearchParams(window.location.search);
+      const token = urlParams.get("token") || "";
+
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = "Updating Password...";
+      }
+
+      try {
+        const res = await fetch("/api/auth/reset-password", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: magicToken, email: magicEmail })
+          body: JSON.stringify({ token, new_password: newPwd }),
+        });
+        const data = await res.json();
+        if (res.ok && data.status === "SUCCESS") {
+          showToast("Password updated successfully! Please sign in.");
+          window.history.replaceState({}, document.title, window.location.pathname);
+          document.getElementById("resetPasswordCard").style.display = "none";
+          document.getElementById("loginCard").style.display = "block";
+          const statusEl = document.getElementById("loginStatus");
+          if (statusEl) {
+            statusEl.style.display = "block";
+            statusEl.innerHTML = `
+              <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:14px; color:#15803d; font-size:13px;">
+                <strong>Success:</strong> Password updated. You can now sign in with your new credentials.
+              </div>
+            `;
+          }
+        } else {
+          showToast(data.detail || "Password reset failed.");
+          if (msgEl) {
+            msgEl.style.display = "block";
+            msgEl.innerHTML = `<div style="color:#b91c1c; font-size:13px;">${data.detail || "Reset failed."}</div>`;
+          }
+        }
+      } catch (err) {
+        showToast("Error updating password: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = "Update Password & Sign In";
+        }
+      }
+    };
+
+    // Check URL on Load for Password Reset Action
+    (function checkUrlAuthAction() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const action = urlParams.get("action");
+      const token = urlParams.get("token");
+
+      if (action === "reset-password" && token) {
+        const loginCard = document.getElementById("loginCard");
+        const resetCard = document.getElementById("resetPasswordCard");
+        if (loginCard) loginCard.style.display = "none";
+        if (resetCard) resetCard.style.display = "block";
+
+        fetch("/api/auth/verify-reset-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
         })
         .then(async r => {
           const data = await r.json();
-          if (r.ok && data.token) {
-            window.localStorage.setItem("corporate_token", data.token);
-            window.localStorage.setItem("user_email", data.email);
-            window.history.replaceState({}, document.title, window.location.pathname);
-            setAuthenticatedState(data.email, data.is_admin);
-            showToast(`Welcome! Authenticated as ${data.email}`);
-            if (data.custom_token && window._firebaseSignInWithCustomToken && window._firebaseAuth) {
-              window._firebaseSignInWithCustomToken(window._firebaseAuth, data.custom_token).catch(() => {});
-            }
-          } else {
-            window.history.replaceState({}, document.title, window.location.pathname);
-            showToast(data.detail || "Authentication link expired or invalid.");
-            resetLoginForm();
+          if (!r.ok) {
+            showToast(data.detail || "Reset link is invalid or expired.");
+            if (resetCard) resetCard.style.display = "none";
+            if (loginCard) loginCard.style.display = "block";
           }
         })
-        .catch(err => {
-          window.history.replaceState({}, document.title, window.location.pathname);
-          showToast("Failed to verify link: " + err.message);
-          resetLoginForm();
-        });
+        .catch(() => {});
       }
     })();
 
@@ -1923,6 +2246,12 @@
       if (data.status === "PARKED_SUCCESS") {
         cardClass = "success";
         statusPill = `<span style="background:var(--success-light); color:var(--success); border:1px solid var(--success-border); font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">PARKED IN SAP (MIR7)</span>`;
+      } else if (data.status === "IRRELEVANT_DOC_PENDING" || data.is_irrelevant) {
+        cardClass = "hitl";
+        statusPill = `<span style="background:#fffbeb; color:#b45309; border:1px solid #fde047; font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">IRRELEVANT DOCUMENT REVIEW</span>`;
+      } else if (data.status === "BATCH_DUPLICATE_DETECTED") {
+        cardClass = "duplicate";
+        statusPill = `<span style="background:#fff7ed; color:#c2410c; border:1px solid #fed7aa; font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">INTRA-BATCH DUPLICATE (SKIPPED)</span>`;
       } else if (data.status === "HITL_REQUIRED") {
         cardClass = "hitl";
         statusPill = `<span style="background:var(--warning-light); color:var(--warning); border:1px solid var(--warning-border); font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">SELF-SERVICE REVIEW (HITL)</span>`;
@@ -1932,6 +2261,9 @@
       } else if (data.status === "DUPLICATE_DETECTED") {
         cardClass = "duplicate";
         statusPill = `<span style="background:var(--info-light); color:#0369a1; border:1px solid var(--info-border); font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">DUPLICATE DETECTED</span>`;
+      } else if (data.status === "DISCARDED_IRRELEVANT") {
+        cardClass = "error";
+        statusPill = `<span style="background:#f1f5f9; color:#64748b; border:1px solid #cbd5e1; font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">DISCARDED</span>`;
       } else if (data.status === "SECURITY_BLOCKED") {
         cardClass = "error";
         statusPill = `<span style="background:#fee2e2; color:#b91c1c; border:1px solid #f87171; font-size:12px; font-weight:700; padding:3px 10px; border-radius:4px;">SECURITY BLOCKED</span>`;
@@ -2081,113 +2413,147 @@
         `;
       }
 
-      // 2. Human-in-the-Loop (HITL) Presentation with Inline Correction Form
-      else if (data.status === "HITL_REQUIRED") {
+      // 2. Irrelevant Document Presentation (One-Click Discard, No Input Required)
+      else if (data.status === "IRRELEVANT_DOC_PENDING" || data.is_irrelevant) {
         const err = data.error_info || {};
         const ext = data.extracted_data || {};
         const header = ext.HeaderData || {};
 
         innerHTML += `
-          <div class="hitl-alert-box">
-            <div class="hitl-alert-title">
+          <div class="hitl-alert-box" style="background:#fffbeb; border:1px solid #fef08a;">
+            <div class="hitl-alert-title" style="color:#b45309;">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="8" x2="12" y2="12"></line>
                 <line x1="12" y1="16" x2="12.01" y2="16"></line>
               </svg>
-              <span>${err.error_title || "Action Required: Missing Information"}</span>
+              <span>Irrelevant Document Flagged (Non-Authorized Entity)</span>
             </div>
-            <div class="hitl-alert-msg">${err.error_message || "Mandatory fields required by SAP S/4HANA are missing."}</div>
-            <div style="font-size:12px; font-weight:600; color:#92400e; margin-top:4px;">
-              <strong>Self-Service Resolution (No Admin Escalation Needed):</strong> As the uploader or reviewer, enter or correct the missing values below and click "Validate &amp; Resume Parking in SAP".
+            <div class="hitl-alert-msg" style="color:#92400e;">
+              ${err.error_message || "This document is not billed to Auro Enterprises (8000) or Trident Chemphar (9000)."}
+            </div>
+            <div style="background:#ffffff; border:1px solid #fed7aa; border-radius:6px; padding:12px; margin-top:12px; font-size:12px; color:#451a03;">
+              <div><strong>Billed Entity Extracted:</strong> ${header.CompName || 'Unrecognized Entity'} (CompCode: ${header.CompCode || 'None'}) 🔒</div>
+              <div style="margin-top:4px;"><strong>Invoice Reference:</strong> ${header.RefDocNo || 'N/A'} 🔒</div>
+              <div style="margin-top:6px; font-weight:600; color:#b45309;">
+                • Per AP policy, irrelevant documents do not require manual field entry. Click below to confirm and discard.
+              </div>
             </div>
 
-            <!-- Human Correction Inline Form -->
+            <!-- Failure Alert Delivery Status Banner -->
+            <div class="alert-dispatched-box" style="margin-top:10px; background:#eff6ff; border-color:#bfdbfe; color:#1e40af;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+              <span>Alert Dispatched: Non-success notification delivered to <code>aic1176@aurogroup.com</code> via Power Automate</span>
+            </div>
+
+            <div style="margin-top:14px; display:flex; gap:10px;">
+              <button type="button" class="btn-primary" style="background:#dc2626; border-color:#dc2626;" onclick="discardIrrelevantDocument('${traceId}')">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                <span>Confirm Irrelevant &amp; Discard Document</span>
+              </button>
+            </div>
+          </div>
+        `;
+      }
+
+      // 3. Scenario 2: Intra-Batch Duplicate Detected (Skipped CPI Parking)
+      else if (data.status === "BATCH_DUPLICATE_DETECTED") {
+        const err = data.error_info || {};
+        innerHTML += `
+          <div class="alert-dispatched-box" style="background:#fff7ed; border-color:#fed7aa; color:#9a3412; padding:16px;">
+            <div style="display:flex; align-items:center; gap:8px; font-weight:700; font-size:14px; margin-bottom:4px; color:#c2410c;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+              <span>Intra-Batch Duplicate Flagged (Skipped CPI Parking)</span>
+            </div>
+            <div style="font-size:13px; line-height:1.4; color:#7c2d12;">
+              ${err.error_message || "Intra-batch duplicate: Another identical document was submitted in this upload batch. Only the first copy was parked; this duplicate was flagged and skipped."}
+            </div>
+            <div style="margin-top:10px; font-size:12px; color:#9a3412; display:flex; align-items:center; gap:6px;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+              <span>Duplicate failure alert dispatched to <strong>aic1176@aurogroup.com</strong> via Power Automate</span>
+            </div>
+          </div>
+        `;
+      }
+
+      // 4. Human-in-the-Loop (HITL) Presentation (Strict Field Locking: Only PO and SES Editable)
+      else if (data.status === "HITL_REQUIRED" || data.status === "SAP_REJECTED") {
+        const err = data.error_info || {};
+        const ext = data.extracted_data || {};
+        const header = ext.HeaderData || {};
+        const isRejected = (data.status === "SAP_REJECTED");
+
+        innerHTML += `
+          <div class="hitl-alert-box" style="${isRejected ? 'background:#fff7ed; border-color:#fed7aa;' : ''}">
+            <div class="hitl-alert-title" style="${isRejected ? 'color:#c2410c;' : ''}">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+              <span>${err.error_title || (isRejected ? "SAP S/4HANA Rejection - PO/SES Review" : "Action Required: Missing PO Number")}</span>
+            </div>
+            <div class="hitl-alert-msg" style="${isRejected ? 'color:#9a3412;' : ''}">
+              ${err.error_message || data.sap_message || "Mandatory Purchase Order required by SAP S/4HANA is missing."}
+            </div>
+
+            <!-- Failure Alert Delivery Status Banner -->
+            <div class="alert-dispatched-box" style="margin-top:10px; background:#eff6ff; border-color:#bfdbfe; color:#1e40af;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+              <span>Alert Dispatched: Non-success incident notification sent to <code>aic1176@aurogroup.com</code> via Power Automate</span>
+            </div>
+
+            <!-- Locked Extracted Attributes Grid (Read-Only per Enterprise Spec) -->
+            <div style="margin-top:12px; background:#ffffff; border:1px solid #fed7aa; border-radius:6px; padding:12px;">
+              <div style="font-size:12px; font-weight:700; color:#78350f; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                <span>Locked Invoice Attributes (Read-Only per Enterprise Policy)</span>
+              </div>
+              <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:8px; font-size:12px; color:#451a03;">
+                <div>Ref Doc (XBLNR): <strong>${header.RefDocNo || '-'}</strong> 🔒</div>
+                <div>Doc Date (BLDAT): <strong>${header.DocDate || '-'}</strong> 🔒</div>
+                <div>Company: <strong>${header.CompCode || '-'} (${header.CompName || '-'})</strong> 🔒</div>
+                <div>Gross Value: <strong>₹ ${(header.TotalInvVal || 0).toLocaleString('en-IN', {minimumFractionDigits:2})}</strong> 🔒</div>
+                <div>Taxable Base: <strong>₹ ${(header.TaxableVal || 0).toLocaleString('en-IN', {minimumFractionDigits:2})}</strong> 🔒</div>
+                <div>Business Place: <strong>${header.BusinessPlace || '-'}</strong> 🔒</div>
+              </div>
+            </div>
+
+            <!-- Human Correction Inline Form (Strictly PO and SES) -->
             <form onsubmit="event.preventDefault(); submitHITLResolution('${traceId}');" style="margin-top:14px;">
-              <div class="hitl-form-grid">
+              <div class="hitl-form-grid" style="grid-template-columns: 1fr 1fr;">
                 <div class="hitl-form-group">
-                  <label class="hitl-form-label">Purchase Order (10-digit PO) *</label>
+                  <label class="hitl-form-label">Purchase Order (10-digit PO) * (MANDATORY)</label>
                   <input
                     type="text"
                     id="hitl_po_${traceId}"
                     class="hitl-input"
-                    placeholder="4500123456"
+                    placeholder="e.g. 4500123456"
                     value="${header.PONumber || ''}"
                     pattern="^\\d{10}$"
                     required
+                    style="border-color:#0284c7; background:#f0f9ff;"
                   />
+                  <span style="font-size:11px; color:#0369a1; margin-top:2px;">Only PO is Mandatory. Must be exactly 10 numeric digits.</span>
                 </div>
                 <div class="hitl-form-group">
-                  <label class="hitl-form-label">Service Entry Sheet (SES, if service)</label>
+                  <label class="hitl-form-label">Service Entry Sheet (SES) (OPTIONAL)</label>
                   <input
                     type="text"
                     id="hitl_ses_${traceId}"
                     class="hitl-input"
-                    placeholder="1000xxxxxx"
+                    placeholder="e.g. 1000123456 (Optional)"
                     value="${header.SES || ''}"
+                    pattern="^(1\\d{9})?$"
                   />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Invoice Ref No (XBLNR) *</label>
-                  <input
-                    type="text"
-                    id="hitl_ref_${traceId}"
-                    class="hitl-input"
-                    placeholder="INV-2026-001"
-                    value="${header.RefDocNo || ''}"
-                    required
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Company Code (BUKRS)</label>
-                  <input
-                    type="text"
-                    id="hitl_comp_${traceId}"
-                    class="hitl-input"
-                    value="${header.CompCode || '8000'}"
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Gross Value (INR) *</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    id="hitl_gross_${traceId}"
-                    class="hitl-input"
-                    value="${header.TotalInvVal || ''}"
-                    required
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Taxable Base (INR) *</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    id="hitl_taxable_${traceId}"
-                    class="hitl-input"
-                    value="${header.TaxableVal || ''}"
-                    required
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Document Date (BLDAT)</label>
-                  <input
-                    type="text"
-                    id="hitl_date_${traceId}"
-                    class="hitl-input"
-                    placeholder="YYYY-MM-DD or DD.MM.YYYY"
-                    value="${header.DocDate || ''}"
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Delivery Note (optional)</label>
-                  <input
-                    type="text"
-                    id="hitl_deliv_${traceId}"
-                    class="hitl-input"
-                    placeholder="DN-xxxx"
-                    value="${header.DeliveryNote || ''}"
-                  />
+                  <span style="font-size:11px; color:#64748b; margin-top:2px;">Optional: 10 digits starting with 1 if service invoice.</span>
                 </div>
               </div>
 
@@ -2198,191 +2564,6 @@
                     <line x1="5" y1="12" x2="19" y2="12"></line>
                     <polyline points="12 5 19 12 12 19"></polyline>
                   </svg>
-                </button>
-              </div>
-            </form>
-          </div>
-        `;
-      }
-
-      // 3. SAP S/4HANA BAPI Business Rejection
-      else if (data.status === "SAP_REJECTED") {
-        const err = data.error_info || {};
-        const ext = data.extracted_data || {};
-        const header = ext.HeaderData || {};
-        const sapMsg = data.sap_message || err.error_message || "SAP Business Error: Rejected by S/4HANA BAPI.";
-        const alertIncident = data.alert_notification || {};
-
-        innerHTML += `
-          <div class="sap-rejected-box">
-            <div class="sap-rejected-title">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ea580c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                <line x1="12" y1="9" x2="12" y2="13"></line>
-                <line x1="12" y1="17" x2="12.01" y2="17"></line>
-              </svg>
-              <span>SAP S/4HANA BAPI Business Rejection</span>
-            </div>
-            <div class="sap-rejected-msg">${sapMsg}</div>
-            <div class="sap-rejected-hint">
-              <strong>Root Cause &amp; Resolution:</strong> ${
-                sapMsg.includes("posting periods") 
-                  ? "The invoice date falls into a closed accounting period in SAP S/4HANA. Use the Inline Edit form below to adjust the Document Date (BLDAT) to an open period (e.g. July 2026 or an active posting period in Company Code " + (header.CompCode || "8000") + ") and click 'Validate &amp; Retry Parking in SAP'."
-                  : (err.resolution_hint || "Verify purchasing document, vendor master data, or posting date in SAP GUI (/nME23N).")
-              }
-            </div>
-
-            <!-- Failure Alert Delivery Status Banner -->
-            <div class="alert-dispatched-box">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
-                <polyline points="22,6 12,13 2,6"></polyline>
-              </svg>
-              <span>
-                <strong>Automation Failure Alert:</strong> Triggered for <code>aic1176@aurogroup.com</code>
-                ${alertIncident.incident_id ? `• Incident: <code>${alertIncident.incident_id}</code>` : ''}
-                ${alertIncident.status ? `• Status: <code>${alertIncident.status}</code>` : '• Logged in Firestore incident_alerts'}
-              </span>
-            </div>
-
-            <!-- Extracted Fields Summary Grid -->
-            <div class="fields-dashboard-grid" style="margin-top:14px; margin-bottom:14px;">
-              <div class="field-card">
-                <div class="field-card-label">Invoice Ref (XBLNR)</div>
-                <div class="field-card-val">${header.RefDocNo || "-"}</div>
-              </div>
-              <div class="field-card">
-                <div class="field-card-label">Purchase Order (EBELN)</div>
-                <div class="field-card-val mono-val" style="color:var(--primary);">${header.PONumber || "-"}</div>
-              </div>
-              <div class="field-card">
-                <div class="field-card-label">Document Date (BLDAT)</div>
-                <div class="field-card-val mono-val" style="color:#ea580c; font-weight:700;">${header.DocDate || "-"}</div>
-              </div>
-              <div class="field-card">
-                <div class="field-card-label">Company Code (BUKRS)</div>
-                <div class="field-card-val mono-val">${header.CompCode || "8000"}</div>
-              </div>
-              <div class="field-card">
-                <div class="field-card-label">Total Gross Value</div>
-                <div class="field-card-val mono-val">₹ ${parseFloat(header.TotalInvVal || 0).toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
-              </div>
-              <div class="field-card">
-                <div class="field-card-label">Taxable Base</div>
-                <div class="field-card-val mono-val">₹ ${parseFloat(header.TaxableVal || 0).toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
-              </div>
-            </div>
-
-            <!-- Inline Self-Service Correction & Re-dispatch Form -->
-            <div style="font-size:13px; font-weight:700; color:#7c2d12; margin-top:12px; margin-bottom:4px;">
-              Self-Service Correction &amp; Re-park (No Admin Escalation Needed)
-            </div>
-            <form onsubmit="event.preventDefault(); submitHITLResolution('${traceId}');" style="margin-top:8px;">
-              <div class="hitl-form-grid">
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Document Date (BLDAT, YYYY-MM-DD or DD.MM.YYYY) *</label>
-                  <input
-                    type="text"
-                    id="hitl_date_${traceId}"
-                    class="hitl-input"
-                    placeholder="YYYY-MM-DD"
-                    value="${header.DocDate || ''}"
-                    required
-                  />
-                  <span style="font-size:10px; color:#b45309;">Change date to an open SAP posting period if rejected</span>
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Purchase Order (10-digit PO) *</label>
-                  <input
-                    type="text"
-                    id="hitl_po_${traceId}"
-                    class="hitl-input"
-                    placeholder="4500123456"
-                    value="${header.PONumber || ''}"
-                    pattern="^\\d{10}$"
-                    required
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Company Code (BUKRS)</label>
-                  <input
-                    type="text"
-                    id="hitl_comp_${traceId}"
-                    class="hitl-input"
-                    value="${header.CompCode || '8000'}"
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Invoice Ref No (XBLNR) *</label>
-                  <input
-                    type="text"
-                    id="hitl_ref_${traceId}"
-                    class="hitl-input"
-                    placeholder="INV-2026-001"
-                    value="${header.RefDocNo || ''}"
-                    required
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Gross Value (INR) *</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    id="hitl_gross_${traceId}"
-                    class="hitl-input"
-                    value="${header.TotalInvVal || ''}"
-                    required
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Taxable Base (INR) *</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    id="hitl_taxable_${traceId}"
-                    class="hitl-input"
-                    value="${header.TaxableVal || ''}"
-                    required
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Service Entry Sheet (SES, optional)</label>
-                  <input
-                    type="text"
-                    id="hitl_ses_${traceId}"
-                    class="hitl-input"
-                    placeholder="1000xxxxxx"
-                    value="${header.SES || ''}"
-                  />
-                </div>
-                <div class="hitl-form-group">
-                  <label class="hitl-form-label">Delivery Note (optional)</label>
-                  <input
-                    type="text"
-                    id="hitl_deliv_${traceId}"
-                    class="hitl-input"
-                    placeholder="DN-xxxx"
-                    value="${header.DeliveryNote || ''}"
-                  />
-                </div>
-              </div>
-
-              <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
-                <button type="submit" class="btn-primary" id="btn_submit_hitl_${traceId}">
-                  <span>Validate &amp; Retry Parking in SAP (MIR7)</span>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                    <polyline points="12 5 19 12 12 19"></polyline>
-                  </svg>
-                </button>
-                <button type="button" class="btn-secondary" onclick="copyDocError('${traceId}')">
-                  <span>Copy Error Details</span>
-                </button>
-                <button type="button" class="btn-secondary" onclick="copyToClipboard('${traceId}', 'Trace ID copied')">
-                  <span>Copy Trace ID</span>
-                </button>
-                <button type="button" class="btn-secondary" onclick="exportJSON('${traceId}')">
-                  <span>Export Audit JSON</span>
                 </button>
               </div>
             </form>
@@ -2467,7 +2648,7 @@
       feed.appendChild(card);
     }
 
-    // HUMAN-IN-THE-LOOP RESOLUTION SUBMISSION
+    // HUMAN-IN-THE-LOOP RESOLUTION SUBMISSION (Strictly PO and SES)
     window.submitHITLResolution = async (traceId) => {
       const btn = document.getElementById(`btn_submit_hitl_${traceId}`);
       if (btn) {
@@ -2475,14 +2656,24 @@
         btn.innerText = "Validating with SAP S/4HANA...";
       }
 
-      const dateVal = document.getElementById(`hitl_date_${traceId}`)?.value || "";
-      const poVal = document.getElementById(`hitl_po_${traceId}`)?.value || "";
-      const sesVal = document.getElementById(`hitl_ses_${traceId}`)?.value || "";
-      const delivVal = document.getElementById(`hitl_deliv_${traceId}`)?.value || "";
-      const refVal = document.getElementById(`hitl_ref_${traceId}`)?.value || "";
-      const compVal = document.getElementById(`hitl_comp_${traceId}`)?.value || "";
-      const grossVal = parseFloat(document.getElementById(`hitl_gross_${traceId}`)?.value || 0);
-      const taxableVal = parseFloat(document.getElementById(`hitl_taxable_${traceId}`)?.value || 0);
+      const poVal = (document.getElementById(`hitl_po_${traceId}`)?.value || "").trim();
+      const sesVal = (document.getElementById(`hitl_ses_${traceId}`)?.value || "").trim();
+
+      if (!poVal) {
+        showToast("PO Number is mandatory. Please provide a 10-digit Purchase Order.");
+        if (btn) { btn.disabled = false; btn.innerText = "Validate & Resume Parking in SAP"; }
+        return;
+      }
+      if (!/^\d{10}$/.test(poVal)) {
+        showToast("Invalid PO Number: Must be exactly 10 numeric digits.");
+        if (btn) { btn.disabled = false; btn.innerText = "Validate & Resume Parking in SAP"; }
+        return;
+      }
+      if (sesVal && !/^1\d{9}$/.test(sesVal)) {
+        showToast("Invalid SES Number: If provided, must be 10 numeric digits starting with 1.");
+        if (btn) { btn.disabled = false; btn.innerText = "Validate & Resume Parking in SAP"; }
+        return;
+      }
 
       try {
         const idToken = await getAuthToken();
@@ -2495,14 +2686,8 @@
           },
           body: JSON.stringify({
             corrections: {
-              DocDate: dateVal || undefined,
               PONumber: poVal,
               SES: sesVal || null,
-              DeliveryNote: delivVal || null,
-              RefDocNo: refVal,
-              CompCode: compVal,
-              TotalInvVal: grossVal,
-              TaxableVal: taxableVal,
             }
           })
         });
@@ -2532,6 +2717,67 @@
         if (btn) {
           btn.disabled = false;
           btn.innerText = "Validate & Resume Parking in SAP";
+        }
+      }
+    };
+
+    // ONE-CLICK DISCARD FOR IRRELEVANT DOCUMENTS (No manual field entry needed)
+    window.discardIrrelevantDocument = async (traceId) => {
+      if (!confirm("Are you sure you want to discard this irrelevant document? This will remove it from the AP review queue.")) {
+        return;
+      }
+      try {
+        const idToken = await getAuthToken();
+        const res = await fetch(`/api/invoices/${traceId}/discard-irrelevant`, {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + idToken,
+            "X-Firebase-Token": idToken,
+          }
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast("Document confirmed irrelevant and discarded.");
+          const card = document.getElementById(`card_${traceId}`);
+          if (card) card.remove();
+          updateHITLBadge();
+          if (currentTab === "hitl") loadHITLQueue();
+        } else {
+          showToast(data.detail || "Failed to discard document.");
+        }
+      } catch (err) {
+        showToast("Error discarding document: " + err.message);
+      }
+    };
+
+    // TRIGGER MONTHLY MIS DIGEST (Admin-only via Power Automate)
+    window.triggerMonthlyMISReport = async () => {
+      const btn = document.getElementById("btnTriggerMonthlyMIS");
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = "Dispatching via Power Automate...";
+      }
+      try {
+        const idToken = await getAuthToken();
+        const res = await fetch("/api/admin/trigger-monthly-mis", {
+          method: "POST",
+          headers: {
+            "Authorization": "Bearer " + idToken,
+            "X-Firebase-Token": idToken,
+          }
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast(`Monthly MIS report successfully dispatched to ${data.recipient} via Power Automate.`);
+        } else {
+          showToast(data.detail || "Failed to trigger monthly MIS report.");
+        }
+      } catch (err) {
+        showToast("Error triggering monthly MIS: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg><span>Dispatch Monthly MIS via Power Automate</span>`;
         }
       }
     };

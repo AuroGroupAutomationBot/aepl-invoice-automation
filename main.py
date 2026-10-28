@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import copy
 import hashlib
@@ -8,6 +9,7 @@ import logging
 import os
 import random
 import re
+import secrets
 import time
 import uuid
 from datetime import datetime, timezone
@@ -43,35 +45,25 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 FIRESTORE_LOCATION = os.getenv("FIRESTORE_LOCATION", "asia-south1")
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB strict limit per enterprise specification
 
-# Multi-domain & Corporate User Whitelist
-RAW_ALLOWED_DOMAINS = os.getenv(
-    "ALLOWED_EMAIL_DOMAINS",
-    os.getenv("ALLOWED_EMAIL_DOMAIN", "ent.aurogroup.com;aurogroup.com;axisclinicals.com")
-)
-ALLOWED_DOMAINS = {
-    d.strip().lower()
-    for d in re.split(r"[,;]", RAW_ALLOWED_DOMAINS)
-    if d.strip()
-}
+# Strict Whitelist & Corporate Domain Authorization
+ALLOWED_DOMAINS = {"aurogroup.com", "axisclinicals.com", "aurorealty.com"}
 
-RAW_ALLOWED_EMAILS = os.getenv(
-    "ALLOWED_EMAILS",
-    "aic1176@aurogroup.com;hasith.g@aurogroup.com;mohithsai.g@axisclinicals.com;abigna.k@aurogroup.com;admin@aurogroup.com;finance@aurogroup.com"
-)
+# Sole Administrator per specification
+ADMIN_EMAILS = {"aic1176@aurogroup.com"}
+
+# Authorized Corporate Users per specification
 ALLOWED_EMAILS = {
-    e.strip().lower()
-    for e in re.split(r"[,;]", RAW_ALLOWED_EMAILS)
-    if e.strip()
+    "aic1176@aurogroup.com",
+    "hasith.g@aurogroup.com",
+    "abigna.k@aurogroup.com",
+    "mohithsai.g@axisclinicals.com",
+    "prasanna.j@aurorealty.com",
 }
-
-# Administrator Email Definition (Default: aic1176@aurogroup.com)
-RAW_ADMIN_EMAILS = os.getenv("ADMIN_EMAILS", "aic1176@aurogroup.com")
-ADMIN_EMAILS = {e.strip().lower() for e in re.split(r"[,;]", RAW_ADMIN_EMAILS) if e.strip()}
 
 # Alert Email Recipient (Default: aic1176@aurogroup.com)
 ALERT_EMAIL_RECIPIENT = os.getenv("ALERT_EMAIL_RECIPIENT", "aic1176@aurogroup.com").strip()
 
-# Default Microsoft Power Automate HTTP Trigger Webhook for Failure Alerts and Secure Magic Link SSO
+# Unified Microsoft Power Automate HTTP Trigger Webhook for ALL Email Communications
 DEFAULT_ALERT_WEBHOOK_URL = (
     "https://default75076fa3e5184305a3745215e94dee.de.environment.api.powerplatform.com:443"
     "/powerautomate/automations/direct/cu/31/workflows/9f516bc84195412ab844e3fa188bc9f7/triggers/manual/paths/invoke"
@@ -113,32 +105,177 @@ ARMOR_TEMPLATE_PATH = f"projects/{GCP_PROJECT}/locations/{MODEL_ARMOR_LOCATION}/
 app = FastAPI(title="AEPL Autonomous SAP Invoice Parking Engine", docs_url=None, redoc_url=None)
 
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """MAANG-Grade Defense-in-Depth HTTP Security Headers Middleware."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com https://fonts.gstatic.com data:;"
+    )
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
+def validate_file_magic_bytes(filename: str, content: bytes) -> bool:
+    """
+    Magic-Byte MIME Signature Sniffing.
+    Protects against disguised polyglots and executable masquerades.
+    """
+    if not content:
+        return False
+    fn = filename.lower()
+    if fn.endswith(".pdf") or content.startswith(b"%PDF"):
+        return content.startswith(b"%PDF-")
+    if fn.endswith((".jpg", ".jpeg")):
+        return content.startswith(b"\xff\xd8\xff")
+    if fn.endswith(".png"):
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if fn.endswith((".tif", ".tiff")):
+        return content.startswith(b"II*\x00") or content.startswith(b"MM\x00*")
+    return False
+
+
 def is_admin_user(email: str) -> bool:
-    """Checks whether the specified email belongs to the Administrator role."""
+    """Checks whether the specified email belongs strictly to the Administrator role (aic1176@aurogroup.com)."""
     return (email or "").lower().strip() in ADMIN_EMAILS
 
 
 # ---------------------------------------------------------
-# 2. FAILURE ALERT NOTIFICATION SERVICE (Firebase Extension: firestore-send-email)
+# CRYPTOGRAPHIC PASSWORDS & IAM HARDENING (OWASP ASVS 4.0 / NIST SP 800-63B)
+# ---------------------------------------------------------
+def hash_password(password: str) -> str:
+    """
+    Hardened PBKDF2-HMAC-SHA512 with 600,000 iterations and 32-byte cryptographic random salt.
+    Compliant with OWASP 2026 Password Storage Guidelines.
+    """
+    salt = os.urandom(32).hex()
+    key = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), bytes.fromhex(salt), 600000)
+    return f"{salt}${key.hex()}"
+
+
+def verify_password(password: str, hashed_str: str) -> bool:
+    """Timing-attack resistant verification of PBKDF2-HMAC-SHA512 password hash."""
+    try:
+        parts = hashed_str.split("$")
+        if len(parts) != 2:
+            return False
+        salt, key_hex = parts
+        computed = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), bytes.fromhex(salt), 600000)
+        return hmac.compare_digest(computed.hex(), key_hex)
+    except Exception:
+        return False
+
+
+# Whitelisted Predefined Corporate Users (Default seed credentials)
+PREDEFINED_USERS = {
+    "aic1176": {
+        "username": "aic1176",
+        "email": "aic1176@aurogroup.com",
+        "role": "admin",
+        "full_name": "AEPL Administrator",
+        "default_pwd": "AuroAdmin@2026!",
+    },
+    "hasith.g": {
+        "username": "hasith.g",
+        "email": "hasith.g@aurogroup.com",
+        "role": "user",
+        "full_name": "Hasith G",
+        "default_pwd": "AuroUser@2026!",
+    },
+    "abigna.k": {
+        "username": "abigna.k",
+        "email": "abigna.k@aurogroup.com",
+        "role": "user",
+        "full_name": "Abigna K",
+        "default_pwd": "AuroUser@2026!",
+    },
+    "mohithsai.g": {
+        "username": "mohithsai.g",
+        "email": "mohithsai.g@axisclinicals.com",
+        "role": "user",
+        "full_name": "Mohith Sai G",
+        "default_pwd": "AuroUser@2026!",
+    },
+    "prasanna.j": {
+        "username": "prasanna.j",
+        "email": "prasanna.j@aurorealty.com",
+        "role": "user",
+        "full_name": "Prasanna J",
+        "default_pwd": "AuroUser@2026!",
+    },
+}
+
+_USERS_MEM: Dict[str, Dict[str, Any]] = {}
+for uname, udata in PREDEFINED_USERS.items():
+    _USERS_MEM[uname.lower()] = {
+        "username": udata["username"],
+        "email": udata["email"].lower(),
+        "role": udata["role"],
+        "full_name": udata["full_name"],
+        "password_hash": hash_password(udata["default_pwd"]),
+        "status": "ACTIVE",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _USERS_MEM[udata["email"].lower()] = _USERS_MEM[uname.lower()]
+
+
+# Anti-Brute Force Sliding-Window Rate Limiter & Lockout Cache
+_LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
+_LOCKED_ACCOUNTS: Dict[str, float] = {}
+
+
+def check_rate_limit_and_lockout(identifier: str, client_ip: str) -> Optional[str]:
+    now = time.time()
+    for key in (identifier.lower(), client_ip):
+        if key in _LOCKED_ACCOUNTS:
+            locked_until = _LOCKED_ACCOUNTS[key]
+            if now < locked_until:
+                remaining_mins = max(1, int((locked_until - now) / 60))
+                return f"Account / IP locked due to multiple failed login attempts. Retry in {remaining_mins} minutes or request password reset."
+            else:
+                del _LOCKED_ACCOUNTS[key]
+    return None
+
+
+def record_failed_login(identifier: str, client_ip: str):
+    now = time.time()
+    for key in (identifier.lower(), client_ip):
+        attempts = _LOGIN_ATTEMPTS.setdefault(key, [])
+        attempts = [t for t in attempts if now - t < 900]
+        attempts.append(now)
+        _LOGIN_ATTEMPTS[key] = attempts
+        if len(attempts) >= 5:
+            _LOCKED_ACCOUNTS[key] = now + 1800  # 30 minutes lockout
+            alert_service.send_failure_alert(
+                failure_type="SECURITY_ACCOUNT_LOCKOUT",
+                filename="authentication_gateway",
+                trace_id=f"lock_{key[:8]}",
+                user_email=identifier,
+                error_title=f"Security Lockout: 5 Failed Attempts for '{key}'",
+                error_detail=f"IP {client_ip} has been temporarily locked out for 30 minutes after 5 consecutive failed authentications.",
+            )
+
+
+def reset_login_attempts(identifier: str, client_ip: str):
+    for key in (identifier.lower(), client_ip):
+        _LOGIN_ATTEMPTS.pop(key, None)
+        _LOCKED_ACCOUNTS.pop(key, None)
+
+
+# ---------------------------------------------------------
+# 2. UNIFIED POWER AUTOMATE NOTIFICATION CLIENT
 # ---------------------------------------------------------
 class AlertNotificationService:
     """
-    Automated Failure Incident Alerting Service.
-    Integrates directly with the Official Firebase Extension: 'Trigger Email from Firestore' (firestore-send-email).
-    Reference: https://firebase.google.com/docs/extensions/official/firestore-send-email
-
-    Sends automated failure alerts to administrator (aic1176@aurogroup.com) on:
-    - Model extraction failures (Gemini inference crash / timeout)
-    - Model Armor security blocks (adversarial prompt injection / malicious URI)
-    - SAP CPI BAPI rejections or network disconnects
-    - System unhandled exceptions
-
-    Delivery Architecture:
-    1. Writes directly to Cloud Firestore 'mail' collection (Mumbai asia-south1).
-       This natively triggers the official 'firestore-send-email' extension,
-       which delivers the email via the configured provider (Google Workspace OAuth2,
-       Brevo, Mailgun, Postmark, MailerSend, or AWS SES).
-    2. Writes incident metadata to Cloud Firestore 'incident_alerts' collection for the Admin MIS Dashboard.
+    Unified Enterprise Email Notification Service via Microsoft Power Automate Webhook.
+    Delivers:
+    1. Incident Failure Alerts (All non-success outcomes) -> aic1176@aurogroup.com
+    2. Secure Password Reset Links -> Corporate User & aic1176@aurogroup.com
+    3. Automated Monthly Executive MIS Reports -> aic1176@aurogroup.com
+    4. Account Lockout Security Alerts -> aic1176@aurogroup.com
     """
     def __init__(self, db):
         self.db = db
@@ -147,6 +284,21 @@ class AlertNotificationService:
         self.mail_collection = os.getenv("MAIL_COLLECTION", "mail").strip()
         self.webhook_url = os.getenv("ALERT_WEBHOOK_URL", "").strip() or DEFAULT_ALERT_WEBHOOK_URL
         self._incidents_mem: List[Dict[str, Any]] = []
+
+    def dispatch_power_automate(self, payload: Dict[str, Any]) -> bool:
+        """Sends payload directly to Microsoft Power Automate HTTP trigger webhook."""
+        if not self.webhook_url:
+            return False
+        try:
+            res = requests.post(self.webhook_url, json=payload, timeout=10)
+            if res.status_code in (200, 201, 202):
+                logger.info(f"Power Automate webhook delivered successfully ({res.status_code}) for type '{payload.get('failure_type')}'.")
+                return True
+            else:
+                logger.warning(f"Power Automate returned status {res.status_code}: {res.text[:200]}")
+        except Exception as exc:
+            logger.warning(f"Power Automate dispatch exception: {exc}")
+        return False
 
     def send_failure_alert(
         self,
@@ -158,6 +310,7 @@ class AlertNotificationService:
         error_detail: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Dispatches automated failure incident email to aic1176@aurogroup.com on ALL non-success scenarios."""
         now_iso = datetime.now(timezone.utc).isoformat()
         incident_id = f"inc_{str(uuid.uuid4())[:8]}"
         subject = f"[SAP AP FAILURE ALERT] {error_title} - {filename} ({trace_id})"
@@ -170,7 +323,7 @@ class AlertNotificationService:
             f"Submitted By: {user_email}\n"
             f"Timestamp (UTC): {now_iso}\n"
             f"Error: {error_title} - {error_detail}\n"
-            f"Action Required: Check Admin MIS Dashboard as {self.recipient_email}."
+            f"Action Required: Inspect Admin MIS Dashboard as {self.recipient_email}."
         )
 
         html_body = f"""
@@ -180,7 +333,7 @@ class AlertNotificationService:
                 SAP S/4HANA Invoice Automation — Failure Incident Alert
             </div>
             <div style="padding: 20px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 6px 6px; background-color: #fafbfc;">
-                <p style="font-size: 14px; margin-top: 0;">An automated invoice processing failure has occurred requiring administrative attention.</p>
+                <p style="font-size: 14px; margin-top: 0;">An automated invoice processing exception has occurred requiring administrative attention.</p>
                 <table style="width: 100%; border-collapse: collapse; margin: 15px 0; font-size: 13px;">
                     <tr><td style="padding: 6px 0; font-weight: bold; width: 160px;">Incident ID:</td><td>{incident_id}</td></tr>
                     <tr><td style="padding: 6px 0; font-weight: bold;">Failure Type:</td><td style="color: #b91c1c; font-weight: bold;">{failure_type}</td></tr>
@@ -191,7 +344,7 @@ class AlertNotificationService:
                     <tr><td style="padding: 6px 0; font-weight: bold; vertical-align: top;">Error Summary:</td><td><strong>{error_title}</strong><br><span style="color: #64748b;">{error_detail}</span></td></tr>
                 </table>
                 <div style="margin-top: 20px; padding: 12px; background-color: #fee2e2; border-left: 4px solid #b91c1c; font-size: 13px;">
-                    <strong>Action Required:</strong> Log in to the Admin MIS Dashboard as <code>{self.recipient_email}</code> to inspect telemetry or route this invoice through the Human-in-the-Loop queue.
+                    <strong>Action Required:</strong> Log in to the Admin MIS Dashboard as <code>{self.recipient_email}</code> to inspect telemetry or review in Human-in-the-Loop queue.
                 </div>
             </div>
         </body>
@@ -218,66 +371,201 @@ class AlertNotificationService:
             f"Type: {failure_type} | File: {filename} | Error: {error_title} - {error_detail}"
         )
 
-        # Direct Webhook Dispatch (e.g. Microsoft Power Automate HTTP Trigger, Teams, Slack)
-        if self.webhook_url:
-            try:
-                wh_payload = {
-                    "incident_id": incident_id,
-                    "recipient": self.recipient_email,
-                    "subject": subject,
-                    "html": html_body,
-                    "text": plain_text,
-                    "failure_type": failure_type,
-                    "filename": filename,
-                    "trace_id": trace_id,
-                    "timestamp": now_iso,
-                    "submitted_by": user_email,
-                    "error_title": error_title,
-                    "error_detail": error_detail,
-                }
-                wh_res = requests.post(self.webhook_url, json=wh_payload, timeout=8)
-                if wh_res.status_code in (200, 201, 202):
-                    incident["email_status"] = f"DISPATCHED_WEBHOOK_TO_{self.recipient_email}"
-                    logger.info(f"Alert delivered via Webhook to {self.recipient_email}.")
-                else:
-                    logger.warning(f"Webhook notice ({wh_res.status_code}): {wh_res.text[:200]}")
-            except Exception as wh_exc:
-                logger.warning(f"Webhook delivery notice: {wh_exc}")
+        wh_payload = {
+            "incident_id": incident_id,
+            "recipient": self.recipient_email,
+            "subject": subject,
+            "html": html_body,
+            "text": plain_text,
+            "failure_type": failure_type,
+            "filename": filename,
+            "trace_id": trace_id,
+            "timestamp": now_iso,
+            "submitted_by": user_email,
+            "error_title": error_title,
+            "error_detail": error_detail,
+        }
+        if self.dispatch_power_automate(wh_payload):
+            incident["email_status"] = f"DISPATCHED_WEBHOOK_TO_{self.recipient_email}"
 
-        # Official Firebase Extension 'firestore-send-email' Schema Contract
-        # Triggered automatically when document is added to 'mail' collection in Firestore
+        # Write to Firestore mail collection for backup / firestore-send-email extension
         if self.db:
             try:
-                mail_doc = {
+                self.db.collection(self.mail_collection).document(incident_id).set({
                     "to": [self.recipient_email],
                     "from": self.sender_email,
                     "replyTo": self.sender_email,
-                    "message": {
-                        "subject": subject,
-                        "text": plain_text,
-                        "html": html_body,
-                    },
+                    "message": {"subject": subject, "text": plain_text, "html": html_body},
                     "incident_id": incident_id,
                     "failure_type": failure_type,
                     "filename": filename,
                     "trace_id": trace_id,
                     "timestamp": now_iso,
-                }
-                self.db.collection(self.mail_collection).document(incident_id).set(mail_doc)
-                if incident["email_status"] == "TRIGGERED":
-                    incident["email_status"] = f"QUEUED_IN_FIRESTORE_{self.mail_collection.upper()}"
-                logger.info(f"Alert written to Firestore '{self.mail_collection}' collection for firestore-send-email extension.")
-            except Exception as mail_exc:
-                logger.warning(f"Firestore '{self.mail_collection}' write notice: {mail_exc}")
-
-        # Persist Incident Alert to Cloud Firestore 'incident_alerts' (Mumbai asia-south1)
-        if self.db:
-            try:
+                })
                 self.db.collection("incident_alerts").document(incident_id).set(incident)
-            except Exception as fs_exc:
-                logger.warning(f"Firestore incident_alerts write error: {fs_exc}")
+            except Exception as mail_exc:
+                logger.warning(f"Firestore incident record notice: {mail_exc}")
 
         return incident
+
+    def send_password_reset_email(self, email: str, username: str, reset_url: str) -> bool:
+        """Dispatches secure password reset link via Power Automate with audit copy to aic1176@aurogroup.com."""
+        subject = "[AEPL AP Security] Action Required: Reset Your Password"
+        plain_text = (
+            f"Hello {username},\n\n"
+            f"A password reset was requested for your AEPL SAP Invoice Engine account ({email}).\n"
+            f"Click the link below to set a new password:\n{reset_url}\n\n"
+            f"This link is valid for 15 minutes and can only be used once.\n"
+            f"If you did not request this, please notify {self.recipient_email} immediately."
+        )
+        html_body = f"""
+        <html>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; background-color: #f8fafc; padding: 24px; margin: 0;">
+            <div style="max-width: 560px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+                <div style="background-color: #0f172a; padding: 20px 24px; border-bottom: 3px solid #0284c7;">
+                    <h2 style="color: #ffffff; margin: 0; font-size: 18px; font-weight: 600;">
+                        AEPL SAP Invoice Parking Engine
+                    </h2>
+                    <p style="color: #94a3b8; margin: 4px 0 0 0; font-size: 12px;">Security &amp; Account Recovery</p>
+                </div>
+                <div style="padding: 28px 24px;">
+                    <p style="font-size: 14px; margin-top: 0; color: #334155;">Hello <strong>{username}</strong>,</p>
+                    <p style="font-size: 14px; color: #334155; line-height: 1.6;">
+                        A password reset request was submitted for your corporate account (<code>{email}</code>). Click the button below to establish a new password:
+                    </p>
+                    <div style="text-align: center; margin: 28px 0;">
+                        <a href="{reset_url}" style="background-color: #0284c7; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px; display: inline-block;">
+                            Reset Account Password &rarr;
+                        </a>
+                    </div>
+                    <div style="background-color: #f1f5f9; padding: 12px; border-radius: 6px; font-size: 12px; color: #475569; word-break: break-all;">
+                        <strong>Direct Link:</strong><br>
+                        <a href="{reset_url}" style="color: #0284c7;">{reset_url}</a>
+                    </div>
+                    <p style="font-size: 12px; color: #64748b; margin-top: 24px; line-height: 1.5;">
+                        &bull; This link is cryptographically signed and strictly expires in <strong>15 minutes</strong>.<br>
+                        &bull; It is single-use and will be invalidated immediately upon consumption.<br>
+                        &bull; If you did not make this request, alert the AEPL Administrator at <code>{self.recipient_email}</code>.
+                    </p>
+                </div>
+                <div style="background-color: #f8fafc; padding: 14px 24px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
+                    Auro Enterprises &bull; Automated Accounts Payable &bull; Audit CC: {self.recipient_email}
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        payload = {
+            "incident_id": f"pwd_reset_{str(uuid.uuid4())[:8]}",
+            "recipient": email,
+            "admin_cc": self.recipient_email,
+            "subject": subject,
+            "html": html_body,
+            "text": plain_text,
+            "failure_type": "PASSWORD_RESET_DISPATCH",
+            "filename": "auth_recovery",
+            "trace_id": f"reset_{username}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "submitted_by": email,
+            "error_title": "Password Reset Link Dispatched",
+            "error_detail": f"Time-limited single-use reset token dispatched to {email}.",
+        }
+        return self.dispatch_power_automate(payload)
+
+    def send_monthly_mis_digest(
+        self,
+        month_str: str,
+        metrics: Dict[str, Any],
+        user_breakdown: List[Dict[str, Any]],
+    ) -> bool:
+        """Dispatches automated monthly executive MIS report via Power Automate to aic1176@aurogroup.com."""
+        subject = f"[AEPL AP AUTOMATION] Monthly Executive MIS Report - {month_str}"
+        total_inv = metrics.get("total_invoices", 0)
+        parked = metrics.get("parked_success", 0)
+        hitl = metrics.get("hitl_pending", 0) + metrics.get("hitl_resolved", 0)
+        duplicates = metrics.get("duplicate_detected", 0)
+        gross_val = metrics.get("total_gross_val", 0.0)
+        taxable_val = metrics.get("total_taxable_val", 0.0)
+        success_pct = round((parked / total_inv * 100), 1) if total_inv else 0.0
+
+        user_rows = "".join([
+            f"<tr><td style='padding:6px 10px; border-bottom:1px solid #e2e8f0;'><code>{u.get('email')}</code></td>"
+            f"<td style='padding:6px 10px; border-bottom:1px solid #e2e8f0; text-align:center;'>{u.get('total', 0)}</td>"
+            f"<td style='padding:6px 10px; border-bottom:1px solid #e2e8f0; text-align:center; color:#15803d; font-weight:600;'>{u.get('parked', 0)}</td>"
+            f"<td style='padding:6px 10px; border-bottom:1px solid #e2e8f0; text-align:center; color:#b45309;'>{u.get('hitl', 0)}</td>"
+            f"<td style='padding:6px 10px; border-bottom:1px solid #e2e8f0; text-align:right;'>₹ {round(u.get('gross', 0.0), 2):,}</td></tr>"
+            for u in user_breakdown
+        ])
+
+        html_body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; color: #1e293b; background-color: #f8fafc; padding: 24px; margin: 0;">
+            <div style="max-width: 680px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+                <div style="background-color: #0f172a; padding: 22px 28px; border-bottom: 4px solid #16a34a;">
+                    <h2 style="color: #ffffff; margin: 0; font-size: 20px;">AEPL Autonomous Accounts Payable Automation</h2>
+                    <p style="color: #94a3b8; margin: 4px 0 0 0; font-size: 13px;">Monthly Executive Performance Digest &bull; {month_str}</p>
+                </div>
+                <div style="padding: 24px;">
+                    <div style="display: flex; gap: 12px; margin-bottom: 20px;">
+                        <div style="flex: 1; padding: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px;">
+                            <div style="font-size: 11px; color: #166534; font-weight: bold; text-transform: uppercase;">Total Parked (MIR7)</div>
+                            <div style="font-size: 22px; font-weight: bold; color: #15803d; margin-top: 4px;">{parked} / {total_inv}</div>
+                            <div style="font-size: 11px; color: #15803d; margin-top: 2px;">{success_pct}% Automation Rate</div>
+                        </div>
+                        <div style="flex: 1; padding: 12px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px;">
+                            <div style="font-size: 11px; color: #1e40af; font-weight: bold; text-transform: uppercase;">Gross Financial Volume</div>
+                            <div style="font-size: 22px; font-weight: bold; color: #1d4ed8; margin-top: 4px;">₹ {gross_val:,.2f}</div>
+                            <div style="font-size: 11px; color: #3b82f6; margin-top: 2px;">Taxable: ₹ {taxable_val:,.2f}</div>
+                        </div>
+                        <div style="flex: 1; padding: 12px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px;">
+                            <div style="font-size: 11px; color: #991b1b; font-weight: bold; text-transform: uppercase;">Duplicates Prevented</div>
+                            <div style="font-size: 22px; font-weight: bold; color: #b91c1c; margin-top: 4px;">{duplicates}</div>
+                            <div style="font-size: 11px; color: #dc2626; margin-top: 2px;">HITL Interventions: {hitl}</div>
+                        </div>
+                    </div>
+
+                    <h3 style="font-size: 14px; color: #0f172a; margin: 18px 0 8px 0; border-bottom: 2px solid #f1f5f9; padding-bottom: 6px;">User Activity Breakdown</h3>
+                    <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 20px;">
+                        <thead>
+                            <tr style="background: #f8fafc; color: #475569; text-align: left;">
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0;">Corporate User</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center;">Uploads</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center;">Parked</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center;">HITL</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: right;">Gross Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {user_rows or '<tr><td colspan="5" style="padding:10px; text-align:center; color:#94a3b8;">No uploads recorded for this monthly period.</td></tr>'}
+                        </tbody>
+                    </table>
+
+                    <div style="background-color: #f8fafc; border-left: 4px solid #0284c7; padding: 12px; font-size: 12px; color: #334155;">
+                        <strong>Enterprise Observability:</strong> Zero-Trust Audit Logs are continuously hashed and synchronized in Cloud Firestore (Mumbai asia-south1). Full incident logs available in Admin MIS.
+                    </div>
+                </div>
+                <div style="background-color: #0f172a; padding: 12px 24px; font-size: 11px; color: #94a3b8; text-align: center;">
+                    Designated Recipient: {self.recipient_email} &bull; Generated Automatically via Power Automate
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        payload = {
+            "incident_id": f"mis_{str(uuid.uuid4())[:8]}",
+            "recipient": self.recipient_email,
+            "subject": subject,
+            "html": html_body,
+            "text": f"Monthly MIS Digest for {month_str}: Total={total_inv}, Parked={parked}, Gross=INR {gross_val}",
+            "failure_type": "MONTHLY_MIS_REPORT",
+            "filename": f"monthly_mis_{month_str.replace(' ', '_')}.html",
+            "trace_id": f"mis_{datetime.now(timezone.utc).strftime('%Y%m')}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "submitted_by": self.recipient_email,
+            "error_title": f"Monthly MIS Executive Digest - {month_str}",
+            "error_detail": f"Performance summary delivered: {parked} documents parked, INR {gross_val:,.2f} processed.",
+        }
+        return self.dispatch_power_automate(payload)
 
     def list_incidents(self, limit: int = 50) -> List[Dict[str, Any]]:
         if self.db:
@@ -319,8 +607,8 @@ class SAPErrorTaxonomy:
         "ERR_MISSING_SES": {
             "code": "ERR_MISSING_SES",
             "title": "Service Entry Sheet Missing",
-            "message": "Service Entry Sheet (SES) is required for this service invoice but was not detected.",
-            "resolution_hint": "Enter the 10-digit SES number starting with '1' (LBLNI).",
+            "message": "Service Entry Sheet (SES) was not detected on the document. Routed to HITL for review.",
+            "resolution_hint": "Enter the 10-digit SES starting with '1' if applicable, or confirm PO-only parking (Only PO is mandatory).",
             "hitl_eligible": True,
             "target_fields": ["SES"],
         },
@@ -328,9 +616,34 @@ class SAPErrorTaxonomy:
             "code": "ERR_INVALID_SES",
             "title": "Invalid Service Entry Sheet Format",
             "message": "Service Entry Sheet '{value}' must be exactly 10 digits and start with '1'.",
-            "resolution_hint": "Provide a valid 10-digit SES starting with '1' (e.g., 1000456789).",
+            "resolution_hint": "Provide a valid 10-digit SES starting with '1' (e.g., 1000456789), or clear field if not applicable.",
             "hitl_eligible": True,
             "target_fields": ["SES"],
+        },
+        "ERR_IRRELEVANT_DOCUMENT": {
+            "code": "ERR_IRRELEVANT_DOCUMENT",
+            "title": "Irrelevant / Unrecognized Company Document",
+            "message": "Document does not correspond to an authorized buyer entity (Auro Enterprises [8000] or Trident Chemphar [9000]). Routed to HITL.",
+            "resolution_hint": "Review document preview. Click 'Confirm Irrelevant & Discard' to archive without entering any values.",
+            "hitl_eligible": True,
+            "is_irrelevant": True,
+            "target_fields": [],
+        },
+        "ERR_BATCH_DUPLICATE": {
+            "code": "ERR_BATCH_DUPLICATE",
+            "title": "Intra-Batch Duplicate Detected (Human Error)",
+            "message": "Human error duplicate detected in upload batch: matches previously processed '{seen_file}'. Skipped to prevent duplicate SAP entry.",
+            "resolution_hint": "First instance was parked in SAP. The duplicate instance has been flagged and skipped.",
+            "hitl_eligible": False,
+            "target_fields": [],
+        },
+        "ERR_INVALID_FILE_SIGNATURE": {
+            "code": "ERR_INVALID_FILE_SIGNATURE",
+            "title": "Invalid File Magic-Byte Signature",
+            "message": "Uploaded file '{filename}' failed binary MIME signature verification. File content does not match expected PDF/Image format.",
+            "resolution_hint": "Ensure uploaded files are genuine, uncorrupted PDF or JPEG/PNG documents.",
+            "hitl_eligible": False,
+            "target_fields": [],
         },
         "ERR_MISSING_REF_DOC": {
             "code": "ERR_MISSING_REF_DOC",
@@ -442,14 +755,19 @@ class SAPErrorTaxonomy:
 # ---------------------------------------------------------
 class FirestoreAuditService:
     """
-    Central persistence and audit trail service using Cloud Firestore.
-    Maintains a synchronized in-memory buffer as a resilient fallback.
+    Central persistence and audit trail service using Cloud Firestore (Mumbai asia-south1).
+    MAANG-Grade Security Features:
+    - Tamper-Evident Blockchain-Style Cryptographically Chained SHA-256 Audit Trail
+    - Enterprise Role-Based Access Control (RBAC) & Tenant Isolation
+    - Synchronized In-Memory Ledger for High-Availability
     """
     def __init__(self, db):
         self.db = db
         self._invoices_mem: Dict[str, Dict[str, Any]] = {}
         self._audit_logs_mem: List[Dict[str, Any]] = []
         self._auth_events_mem: List[Dict[str, Any]] = []
+        self._password_resets_mem: Dict[str, Dict[str, Any]] = {}
+        self._last_audit_hash = "GENESIS_AEPL_FINOPS_HASH_2026"
 
     def now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -463,15 +781,29 @@ class FirestoreAuditService:
         message: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Creates cryptographically chained, immutable audit event."""
+        now = self.now_iso()
+        prev_hash = self._last_audit_hash
+        payload_meta = metadata or {}
+        event_id = str(uuid.uuid4())[:12]
+        
+        # SHA-256 Cryptographic Chain
+        event_signature = hashlib.sha256(
+            f"{prev_hash}|{now}|{event_id}|{event_type}|{user_email}|{trace_id}|{message}".encode("utf-8")
+        ).hexdigest()
+        self._last_audit_hash = event_signature
+
         entry = {
-            "event_id": str(uuid.uuid4())[:12],
-            "timestamp": self.now_iso(),
+            "event_id": event_id,
+            "timestamp": now,
             "event_type": event_type,
             "user_email": user_email,
             "trace_id": trace_id or "SYSTEM",
             "severity": severity,
             "message": message,
-            "metadata": metadata or {},
+            "metadata": payload_meta,
+            "prev_hash": prev_hash,
+            "event_hash": event_signature,
         }
         self._audit_logs_mem.append(entry)
 
@@ -515,10 +847,85 @@ class FirestoreAuditService:
             user_email=user_email,
             trace_id=None,
             severity="INFO" if status == "SUCCESS" else "WARNING",
-            message=f"Passwordless login {status.lower()} (Admin: {is_admin_user(user_email)}): {reason}",
+            message=f"Corporate authentication {status.lower()} (Admin: {is_admin_user(user_email)}): {reason}",
             metadata={"client_ip": client_ip, "user_agent": user_agent},
         )
         return entry
+
+    # User IAM & Credential Storage
+    def get_user(self, identifier: str) -> Optional[Dict[str, Any]]:
+        ident = (identifier or "").strip().lower()
+        if ident in _USERS_MEM:
+            return _USERS_MEM[ident]
+        if self.db:
+            try:
+                # Query by username
+                docs = self.db.collection("users").where("username", "==", ident).limit(1).stream()
+                for d in docs:
+                    return d.to_dict()
+                # Query by email
+                docs = self.db.collection("users").where("email", "==", ident).limit(1).stream()
+                for d in docs:
+                    return d.to_dict()
+            except Exception as e:
+                logger.warning(f"Firestore get_user error: {e}")
+        return None
+
+    def save_user(self, user_data: Dict[str, Any]):
+        uname = user_data["username"].lower()
+        email = user_data["email"].lower()
+        _USERS_MEM[uname] = user_data
+        _USERS_MEM[email] = user_data
+        if self.db:
+            try:
+                self.db.collection("users").document(uname).set(user_data)
+            except Exception as e:
+                logger.warning(f"Firestore save_user error: {e}")
+
+    # Password Reset Storage (NIST SP 800-63B / OWASP)
+    def create_password_reset(self, email: str, username: str, token_hash: str, exp: float):
+        doc = {
+            "token_hash": token_hash,
+            "email": email.lower(),
+            "username": username.lower(),
+            "exp": exp,
+            "consumed": False,
+            "created_at": self.now_iso(),
+        }
+        self._password_resets_mem[token_hash] = doc
+        if self.db:
+            try:
+                self.db.collection("password_resets").document(token_hash).set(doc)
+            except Exception as e:
+                logger.warning(f"Firestore password_resets create notice: {e}")
+
+    def get_password_reset(self, token_hash: str) -> Optional[Dict[str, Any]]:
+        record = self._password_resets_mem.get(token_hash)
+        if record and not record.get("consumed") and record.get("exp", 0) > time.time():
+            return record
+        if self.db:
+            try:
+                d = self.db.collection("password_resets").document(token_hash).get()
+                if d.exists:
+                    data = d.to_dict()
+                    if data and not data.get("consumed") and data.get("exp", 0) > time.time():
+                        return data
+            except Exception as e:
+                logger.warning(f"Firestore password_resets lookup notice: {e}")
+        return None
+
+    def consume_password_reset(self, token_hash: str):
+        if token_hash in self._password_resets_mem:
+            self._password_resets_mem[token_hash]["consumed"] = True
+            self._password_resets_mem[token_hash]["consumed_at"] = self.now_iso()
+        if self.db:
+            try:
+                self.db.collection("password_resets").document(token_hash).update({
+                    "consumed": True,
+                    "consumed_at": self.now_iso(),
+                })
+            except Exception as e:
+                logger.warning(f"Firestore password_resets consume notice: {e}")
 
     def save_invoice(self, invoice_data: Dict[str, Any]) -> Dict[str, Any]:
         trace_id = invoice_data.get("trace_id") or str(uuid.uuid4())[:8]
@@ -531,7 +938,6 @@ class FirestoreAuditService:
 
         if self.db:
             try:
-                # Store sanitized metadata copy in Firestore (avoid exceeding 1 MiB document limit)
                 store_copy = copy.deepcopy(invoice_data)
                 ext = store_copy.get("extracted_data")
                 if isinstance(ext, dict):
@@ -591,7 +997,14 @@ class FirestoreAuditService:
         status: Optional[str] = None,
         search: Optional[str] = None,
         limit: int = 100,
+        user_email: Optional[str] = None,
+        is_admin: bool = False,
     ) -> List[Dict[str, Any]]:
+        """
+        Returns filterable invoices with strict multi-tenant isolation.
+        Standard users only see invoices submitted by themselves.
+        Administrators can view all invoices.
+        """
         invoices = []
         if self.db:
             try:
@@ -612,6 +1025,11 @@ class FirestoreAuditService:
 
         invoices.sort(key=lambda x: x.get("created_at", ""), reverse=True)
 
+        # Multi-User RBAC Isolation
+        if not is_admin and user_email:
+            ue = user_email.lower().strip()
+            invoices = [inv for inv in invoices if str(inv.get("submitted_by", "")).lower().strip() == ue]
+
         if status and status != "ALL":
             invoices = [inv for inv in invoices if inv.get("status") == status]
 
@@ -629,21 +1047,31 @@ class FirestoreAuditService:
 
         return invoices[:limit]
 
-    def list_audit_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+    def list_audit_logs(
+        self,
+        limit: int = 50,
+        user_email: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Returns chronological audit events directly from Cloud Firestore (Mumbai asia-south1)."""
         logs = []
         if self.db:
             try:
-                docs = self.db.collection("audit_logs").order_by("timestamp", direction="DESCENDING").limit(limit).stream()
+                docs = self.db.collection("audit_logs").order_by("timestamp", direction="DESCENDING").limit(limit * 2).stream()
                 logs = [d.to_dict() for d in docs]
             except Exception as e:
                 logger.warning(f"Firestore list_audit_logs query notice: {e}")
         if not logs and self._audit_logs_mem:
-            logs = sorted(self._audit_logs_mem, key=lambda x: x.get("timestamp", ""), reverse=True)[:limit]
-        return logs
+            logs = sorted(self._audit_logs_mem, key=lambda x: x.get("timestamp", ""), reverse=True)
 
-    def get_mis_metrics(self) -> Dict[str, Any]:
-        """Calculates comprehensive executive MIS counts and processing statistics."""
+        if not is_admin and user_email:
+            ue = user_email.lower().strip()
+            logs = [l for l in logs if str(l.get("user_email", "")).lower() == ue]
+
+        return logs[:limit]
+
+    def get_mis_metrics(self, user_email: Optional[str] = None, is_admin: bool = False) -> Dict[str, Any]:
+        """Calculates executive MIS counts with strict user isolation for non-administrators."""
         all_inv = list(self._invoices_mem.values())
 
         if self.db:
@@ -655,14 +1083,20 @@ class FirestoreAuditService:
             except Exception as e:
                 logger.warning(f"Firestore get_mis_metrics error: {e}")
 
+        # Multi-User RBAC Isolation
+        if not is_admin and user_email:
+            ue = user_email.lower().strip()
+            all_inv = [i for i in all_inv if str(i.get("submitted_by", "")).lower().strip() == ue]
+
         total_invoices = len(all_inv)
         parked_success = sum(1 for i in all_inv if i.get("status") == "PARKED_SUCCESS")
         hitl_pending = sum(1 for i in all_inv if i.get("status") == "HITL_REQUIRED")
         hitl_resolved = sum(1 for i in all_inv if i.get("status") == "HITL_RESOLVED")
         validation_failed = sum(1 for i in all_inv if i.get("status") == "VALIDATION_FAILED")
-        duplicate_detected = sum(1 for i in all_inv if i.get("status") == "DUPLICATE_DETECTED")
+        duplicate_detected = sum(1 for i in all_inv if i.get("status") in ("DUPLICATE_DETECTED", "BATCH_DUPLICATE_DETECTED"))
         sap_rejected = sum(1 for i in all_inv if i.get("status") == "SAP_REJECTED")
         system_errors = sum(1 for i in all_inv if i.get("status") == "SYSTEM_ERROR")
+        discarded_irrelevant = sum(1 for i in all_inv if i.get("status") == "DISCARDED_IRRELEVANT")
 
         total_taxable_val = 0.0
         total_gross_val = 0.0
@@ -699,6 +1133,7 @@ class FirestoreAuditService:
             "duplicate_detected": duplicate_detected,
             "sap_rejected": sap_rejected,
             "system_errors": system_errors,
+            "discarded_irrelevant": discarded_irrelevant,
             "total_taxable_val": round(total_taxable_val, 2),
             "total_gross_val": round(total_gross_val, 2),
             "successful_logins": successful_logins,
@@ -785,8 +1220,9 @@ def enforce_sap_abap_typing(obj, parent_key=""):
 def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Optional[str]]:
     """
     Validates against the notebook's baseline schema and applies strict SAP Regex rules:
-    - PONumber: Exactly 10 digits
-    - SES: If present, exactly 10 digits starting with 1
+    - PONumber: Mandatory, exactly 10 digits
+    - SES: If missing or unavailable, routes to HITL (Only PO is mandatory for final parking)
+    - SES: If provided, must be exactly 10 digits starting with 1
     - TaxableVal: Must be > 0
     - TotalInvVal: Must be > 0
     """
@@ -803,12 +1239,15 @@ def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Option
     if not re.match(r"^\d{10}$", str(po_number).strip()):
         return False, "ERR_INVALID_PO", str(po_number).strip()
 
-    # 2. Invalid SES Number if present per notebook regex
-    if ses_number and str(ses_number).strip().lower() not in ("null", "none", ""):
-        if not re.match(r"^1\d{9}$", str(ses_number).strip()):
-            return False, "ERR_INVALID_SES", str(ses_number).strip()
+    # 2. Missing SES Number: Routes to HITL per specification
+    if not ses_number or str(ses_number).strip().lower() in ("null", "none", ""):
+        return False, "ERR_MISSING_SES", None
 
-    # 3. Value Validations per notebook
+    # 3. Invalid SES Number if present
+    if not re.match(r"^1\d{9}$", str(ses_number).strip()):
+        return False, "ERR_INVALID_SES", str(ses_number).strip()
+
+    # 4. Value Validations per notebook
     if taxable_val is None or float(taxable_val) <= 0:
         return False, "ERR_TAXABLE_VAL_ZERO", None
 
@@ -852,183 +1291,7 @@ def verify_corporate_session_token(token: str) -> Optional[str]:
         return None
 
 
-# In-memory and Firestore-backed single-use magic link nonces
-_MAGIC_LINKS_CACHE: Dict[str, Dict[str, Any]] = {}
 
-def create_magic_link_token(email: str) -> Tuple[str, str]:
-    """
-    Generates a secure, 15-minute time-limited single-use token for email sign-in.
-    Returns (token_string, nonce).
-    """
-    nonce = str(uuid.uuid4())
-    exp = int(time.time()) + 900  # 15 minutes
-    payload = {
-        "email": email.lower().strip(),
-        "nonce": nonce,
-        "exp": exp,
-        "purpose": "magic_link_login"
-    }
-    payload_json = json.dumps(payload, separators=(',', ':'))
-    payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode()
-    signature = hmac.new(SESSION_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
-    token = f"{payload_b64}.{signature}"
-
-    token_record = {
-        "email": email.lower().strip(),
-        "exp": exp,
-        "used": False,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    _MAGIC_LINKS_CACHE[nonce] = token_record
-    if firestore_client:
-        try:
-            firestore_client.collection("auth_magic_links").document(nonce).set(token_record)
-        except Exception as e:
-            logger.warning(f"Firestore magic link record notice: {e}")
-
-    return token, nonce
-
-def verify_and_consume_magic_link_token(token: str, expected_email: str) -> Optional[str]:
-    """
-    Verifies HMAC signature, expiry, and single-use status of the magic link token.
-    If valid, marks the nonce as used (preventing replay attacks) and returns the validated email.
-    """
-    try:
-        parts = token.split(".")
-        if len(parts) != 2:
-            return None
-        payload_b64, signature = parts
-        expected_sig = hmac.new(SESSION_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected_sig):
-            return None
-        payload_json = base64.urlsafe_b64decode(payload_b64.encode()).decode()
-        payload = json.loads(payload_json)
-
-        if payload.get("purpose") != "magic_link_login":
-            return None
-        if payload.get("exp", 0) < time.time():
-            return None
-
-        token_email = (payload.get("email") or "").lower().strip()
-        if expected_email and token_email != expected_email.lower().strip():
-            return None
-
-        nonce = payload.get("nonce")
-        if not nonce:
-            return None
-
-        # Anti-replay single-use check
-        record = _MAGIC_LINKS_CACHE.get(nonce)
-        if record and record.get("used"):
-            return None
-
-        if firestore_client:
-            try:
-                doc = firestore_client.collection("auth_magic_links").document(nonce).get()
-                if doc.exists and (doc.to_dict() or {}).get("used"):
-                    return None
-            except Exception:
-                pass
-
-        # Invalidate nonce immediately
-        _MAGIC_LINKS_CACHE[nonce] = {"email": token_email, "used": True, "consumed_at": time.time()}
-        if firestore_client:
-            try:
-                firestore_client.collection("auth_magic_links").document(nonce).update({
-                    "used": True,
-                    "consumed_at": datetime.now(timezone.utc).isoformat()
-                })
-            except Exception:
-                pass
-
-        return token_email
-    except Exception as exc:
-        logger.warning(f"Magic link verification error: {exc}")
-        return None
-
-def send_magic_link_email(email: str, magic_url: str) -> bool:
-    """Dispatches the single-use sign-in link directly to user's corporate email."""
-    subject = "[SAP AP SSO] Your Secure Passwordless Sign-In Link"
-    plain_text = (
-        f"SAP S/4HANA Invoice Parking Automation — Single Sign-On\n\n"
-        f"Hello,\n\n"
-        f"A secure sign-in link was requested for {email}.\n\n"
-        f"Click the link below to authenticate:\n{magic_url}\n\n"
-        f"This link is valid for 15 minutes and can only be used once.\n"
-        f"If you did not request this link, please ignore this email."
-    )
-    html_body = f"""
-    <html>
-    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; background-color: #f8fafc; padding: 24px; margin: 0;">
-        <div style="max-width: 560px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-            <div style="background-color: #0f172a; padding: 20px 24px; border-bottom: 3px solid #0284c7;">
-                <h2 style="color: #ffffff; margin: 0; font-size: 18px; font-weight: 600;">
-                    SAP S/4HANA Invoice Ingestion Engine
-                </h2>
-                <p style="color: #94a3b8; margin: 4px 0 0 0; font-size: 12px;">Enterprise Single Sign-On (Passwordless Authentication)</p>
-            </div>
-            <div style="padding: 28px 24px;">
-                <p style="font-size: 14px; margin-top: 0; color: #334155;">Hello,</p>
-                <p style="font-size: 14px; color: #334155; line-height: 1.6;">
-                    A secure passwordless login link was requested for <strong>{email}</strong>. Click the button below to sign in:
-                </p>
-                <div style="text-align: center; margin: 28px 0;">
-                    <a href="{magic_url}" style="background-color: #0284c7; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px; display: inline-block;">
-                        Sign In to SAP Portal &rarr;
-                    </a>
-                </div>
-                <div style="background-color: #f1f5f9; padding: 12px; border-radius: 6px; font-size: 12px; color: #475569; word-break: break-all;">
-                    <strong>Direct Link:</strong><br>
-                    <a href="{magic_url}" style="color: #0284c7;">{magic_url}</a>
-                </div>
-                <p style="font-size: 12px; color: #64748b; margin-top: 24px; line-height: 1.5;">
-                    &bull; This link is valid for <strong>15 minutes</strong> and will expire automatically.<br>
-                    &bull; It is single-use and protects against unauthorized access.<br>
-                    &bull; If you did not make this request, please disregard this email.
-                </p>
-            </div>
-            <div style="background-color: #f8fafc; padding: 14px 24px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center;">
-                Auro Enterprises &bull; Automated AP Financial Operations &bull; Internal Enterprise Tool
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-    wh_url = alert_service.webhook_url or DEFAULT_ALERT_WEBHOOK_URL
-    if wh_url:
-        try:
-            wh_payload = {
-                "incident_id": f"sso_{str(uuid.uuid4())[:8]}",
-                "recipient": email,
-                "subject": subject,
-                "html": html_body,
-                "text": plain_text,
-                "failure_type": "SSO_MAGIC_LINK",
-                "filename": "magic_link_auth.html",
-                "trace_id": f"auth_{str(uuid.uuid4())[:6]}",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "submitted_by": email,
-                "error_title": "Enterprise Single Sign-On Link",
-                "error_detail": f"Passwordless login link dispatched to {email}.",
-            }
-            requests.post(wh_url, json=wh_payload, timeout=8)
-            logger.info(f"Magic link email sent to {email} via Power Automate Webhook.")
-        except Exception as wh_err:
-            logger.warning(f"Power Automate SSO email error: {wh_err}")
-
-    if firestore_client:
-        try:
-            firestore_client.collection(alert_service.mail_collection).add({
-                "to": [email],
-                "from": alert_service.sender_email,
-                "message": {"subject": subject, "text": plain_text, "html": html_body},
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "type": "SSO_MAGIC_LINK"
-            })
-        except Exception as fs_err:
-            logger.warning(f"Firestore mail write notice: {fs_err}")
-    return True
 
 def verify_corporate_user(authorization: Optional[str], x_firebase_token: Optional[str]) -> str:
     token = None
@@ -1167,11 +1430,20 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
         telemetry["sap_time"] = 0.5
         header = payload_dict.get("HeaderData", {})
         ref_doc = header.get("RefDocNo")
+        comp_code = header.get("CompCode")
         if not ref_doc or str(ref_doc).strip().lower() in ("null", "none", ""):
             return {
                 "status": "SAP_REJECTED",
                 "belnr": None,
                 "sap_message": "SAP Business Error: Vendor Invoice Reference (XBLNR) is mandatory for parking in SAP S/4HANA (MIR7).",
+            }
+        existing_dup = audit_service.find_duplicate_invoice(ref_doc, comp_code)
+        if existing_dup and existing_dup.get("trace_id") != trace_id:
+            existing_doc = existing_dup.get("sap_document_number") or "5105600001"
+            return {
+                "status": "DUPLICATE_DETECTED",
+                "belnr": None,
+                "sap_message": f"SAP Duplicate Error: Invoice '{ref_doc}' for Company Code '{comp_code}' already exists in SAP S/4HANA (Accounting Document #{existing_doc}).",
             }
         doc_no = f"5105{random.randint(100000, 999999)}"
         return {
@@ -1221,14 +1493,18 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
         if response.status_code == 200:
             resp_json = response.json()
             sap_response = resp_json.get("Response_VendorInvoice_Park_AEPL", {})
-            sap_status = sap_response.get("Status")
-            sap_message = sap_response.get("Message", "Document parked successfully in SAP.")
+            sap_status = str(sap_response.get("Status", "")).strip().upper()
+            sap_message = str(sap_response.get("Message", "Document parked successfully in SAP."))
 
             match = re.search(r"\[(\d+)\]", sap_message)
             belnr = match.group(1) if match else "5105600001"
 
+            is_dup_in_sap = bool(any(w in sap_message.lower() for w in ["duplicate", "already exists", "already entered", "already parked"]))
+
             if sap_status == "S":
                 return {"status": "SUCCESS", "belnr": belnr, "sap_message": sap_message}
+            elif is_dup_in_sap:
+                return {"status": "DUPLICATE_DETECTED", "belnr": None, "sap_message": f"SAP Duplicate Error: {sap_message}"}
             else:
                 return {"status": "SAP_REJECTED", "belnr": None, "sap_message": f"SAP Business Error: {sap_message}"}
 
@@ -1286,16 +1562,18 @@ async def process_single_invoice_document(
     content: bytes,
     user_email: str,
     trace_id: Optional[str] = None,
+    batch_seen_invoices: Optional[Dict[Tuple[str, str], str]] = None,
 ) -> Dict[str, Any]:
     """
     Executes the complete end-to-end pipeline for an individual invoice document:
-    1. Media Ingestion & PDF synthesis
+    1. Media Ingestion & PDF synthesis with Magic-Byte verification
     2. Gemini 3.8 Flash Multimodal Extraction with Exponential Backoff
     3. Model Armor Output Screening (with failure alert email trigger)
-    4. Duplicate Detection in Firestore
-    5. Schema Validation & HITL Routing if PO/SES missing
-    6. SAP CPI BAPI Execution if Valid (with failure alert email trigger)
-    7. Comprehensive Firestore Audit Trail Recording
+    4. Irrelevant Document Detection (Auro 8000 / Trident 9000 check)
+    5. Scenario 1 Duplicate Detection in Firestore & CPI SAP verification
+    6. Schema Validation & HITL Routing if PO/SES missing (alert triggered)
+    7. SAP CPI BAPI Execution if Valid (with failure alert email trigger)
+    8. Comprehensive Chained Firestore Audit Trail Recording
     """
     t0 = time.time()
     trace_id = trace_id or str(uuid.uuid4())[:8]
@@ -1317,7 +1595,46 @@ async def process_single_invoice_document(
         "model": GEMINI_MODEL,
     }
 
-    # 1. Media handling
+    # 1. Magic-Byte File Signature Verification
+    if not validate_file_magic_bytes(filename, content):
+        err_info = SAPErrorTaxonomy.format_error("ERR_INVALID_FILE_SIGNATURE", filename=filename)
+        invoice_record = {
+            "trace_id": trace_id,
+            "filename": filename,
+            "file_size": len(content),
+            "submitted_by": user_email,
+            "status": "VALIDATION_FAILED",
+            "error_info": err_info,
+            "extracted_data": {},
+            "sap_document_number": None,
+            "telemetry": telemetry,
+        }
+        audit_service.save_invoice(invoice_record)
+        audit_service.log_event(
+            event_type="INVALID_FILE_MAGIC_BYTES",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="ERROR",
+            message=f"File '{filename}' failed binary magic signature verification.",
+        )
+        alert_service.send_failure_alert(
+            failure_type="INVALID_FILE_SIGNATURE",
+            filename=filename,
+            trace_id=trace_id,
+            user_email=user_email,
+            error_title="Invalid File Magic-Byte Signature",
+            error_detail=f"File '{filename}' does not match expected PDF/Image binary signature.",
+        )
+        return {
+            "status": "VALIDATION_FAILED",
+            "trace_id": trace_id,
+            "filename": filename,
+            "error_info": err_info,
+            "extracted_data": {},
+            "telemetry": telemetry,
+        }
+
+    # Media handling
     try:
         prompt_parts, base64_attachment, mime_type = process_single_file_media(filename, content)
     except Exception as media_exc:
@@ -1425,6 +1742,14 @@ async def process_single_invoice_document(
 
     if response is None:
         err_info = SAPErrorTaxonomy.format_error("ERR_SYSTEM_EXCEPTION", detail="Vertex AI returned empty response.")
+        alert_service.send_failure_alert(
+            failure_type="AI_EMPTY_RESPONSE",
+            filename=filename,
+            trace_id=trace_id,
+            user_email=user_email,
+            error_title="Empty Model Response",
+            error_detail="Vertex AI returned empty response.",
+        )
         return {
             "status": "SYSTEM_ERROR",
             "trace_id": trace_id,
@@ -1517,8 +1842,116 @@ async def process_single_invoice_document(
     header = payload_dict.get("HeaderData", {})
     ref_doc_no = header.get("RefDocNo")
     comp_code = header.get("CompCode")
+    comp_name = str(header.get("CompName") or "").strip().lower()
 
-    # 5. Check Cloud Firestore for potential duplicate
+    # 5. Irrelevant Document Detection (Auro 8000 / Trident 9000 check)
+    is_irrelevant_doc = bool(
+        str(comp_code).strip() not in ("8000", "9000")
+        or not any(valid in comp_name for valid in ["auro", "trident", "chemphar"])
+    )
+    if is_irrelevant_doc:
+        err_info = SAPErrorTaxonomy.format_error("ERR_IRRELEVANT_DOCUMENT")
+        err_info["error_message"] = (
+            f"Document billed to '{header.get('CompName') or 'Unrecognized Entity'}', "
+            f"which does not match Auro Enterprises (8000) or Trident Chemphar (9000)."
+        )
+        invoice_record = {
+            "trace_id": trace_id,
+            "filename": filename,
+            "file_size": len(content),
+            "submitted_by": user_email,
+            "status": "IRRELEVANT_DOC_PENDING",
+            "error_info": err_info,
+            "is_irrelevant": True,
+            "missing_fields": [],
+            "extracted_data": payload_dict,
+            "sap_document_number": None,
+            "telemetry": telemetry,
+        }
+        audit_service.save_invoice(invoice_record)
+        audit_service.log_event(
+            event_type="IRRELEVANT_DOCUMENT_ROUTED_HITL",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="WARNING",
+            message=f"Irrelevant document '{filename}' routed to review: {err_info['error_message']}",
+            metadata={"comp_name": header.get("CompName"), "comp_code": comp_code},
+        )
+        alert_service.send_failure_alert(
+            failure_type="IRRELEVANT_DOCUMENT_ROUTED",
+            filename=filename,
+            trace_id=trace_id,
+            user_email=user_email,
+            error_title="Irrelevant Document Routed to Review",
+            error_detail=err_info["error_message"],
+            metadata={"comp_name": header.get("CompName"), "comp_code": comp_code},
+        )
+        return {
+            "status": "IRRELEVANT_DOC_PENDING",
+            "trace_id": trace_id,
+            "filename": filename,
+            "error_info": err_info,
+            "is_irrelevant": True,
+            "extracted_data": payload_dict,
+            "telemetry": telemetry,
+        }
+
+    # 5.1 Scenario 2: Intra-Batch Duplicate Detection (Human error prevention)
+    if batch_seen_invoices is not None and ref_doc_no and comp_code:
+        inv_key = (str(ref_doc_no).strip().upper(), str(comp_code).strip())
+        if inv_key in batch_seen_invoices:
+            orig_doc = batch_seen_invoices[inv_key]
+            err_info = SAPErrorTaxonomy.format_error(
+                "ERR_BATCH_DUPLICATE",
+                filename=filename,
+                original_doc=orig_doc,
+            )
+            err_info["error_message"] = (
+                f"Intra-batch duplicate: Invoice Reference '{ref_doc_no}' for Company Code '{comp_code}' "
+                f"was already uploaded in this batch as '{orig_doc}'. Only the first copy is parked in SAP; "
+                f"this duplicate was flagged, skipped, and prevented from double-posting to SAP."
+            )
+            invoice_record = {
+                "trace_id": trace_id,
+                "filename": filename,
+                "file_size": len(content),
+                "submitted_by": user_email,
+                "status": "BATCH_DUPLICATE_DETECTED",
+                "error_info": err_info,
+                "extracted_data": payload_dict,
+                "sap_document_number": None,
+                "telemetry": telemetry,
+            }
+            audit_service.save_invoice(invoice_record)
+            audit_service.log_event(
+                event_type="BATCH_DUPLICATE_FLAGGED",
+                user_email=user_email,
+                trace_id=trace_id,
+                severity="WARNING",
+                message=f"Intra-batch duplicate detected: '{filename}' duplicate of '{orig_doc}'. Skipped CPI parking.",
+                metadata={"ref_doc_no": ref_doc_no, "comp_code": comp_code, "original_doc": orig_doc},
+            )
+            alert_service.send_failure_alert(
+                failure_type="BATCH_DUPLICATE_DETECTED",
+                filename=filename,
+                trace_id=trace_id,
+                user_email=user_email,
+                error_title=f"Intra-Batch Duplicate Document Flagged - {ref_doc_no}",
+                error_detail=err_info["error_message"],
+                metadata={"ref_doc_no": ref_doc_no, "comp_code": comp_code, "original_doc": orig_doc},
+            )
+            return {
+                "status": "BATCH_DUPLICATE_DETECTED",
+                "trace_id": trace_id,
+                "filename": filename,
+                "error_info": err_info,
+                "extracted_data": payload_dict,
+                "telemetry": telemetry,
+            }
+        else:
+            batch_seen_invoices[inv_key] = filename
+
+    # 6. Scenario 1: Check Cloud Firestore for potential duplicate
     existing_dup = audit_service.find_duplicate_invoice(ref_doc_no, comp_code)
     existing_doc = (existing_dup.get("sap_document_number") or existing_dup.get("trace_id")) if existing_dup else None
     if existing_dup:
@@ -1527,11 +1960,11 @@ async def process_single_invoice_document(
             user_email=user_email,
             trace_id=trace_id,
             severity="INFO",
-            message=f"Invoice reference '{ref_doc_no}' found in Firestore (SAP #{existing_doc}). Attempting SAP CPI dispatch before confirming pure duplicate...",
+            message=f"Invoice reference '{ref_doc_no}' found in Firestore (SAP #{existing_doc}). Reaching out to CPI to verify duplicate status in SAP...",
             metadata={"ref_doc_no": ref_doc_no, "existing_doc": existing_doc},
         )
 
-    # 6. Schema & Business Rules Validation
+    # 7. Schema & Business Rules Validation (PO & SES Availability)
     is_valid, error_code, error_val = validate_sap_schema(payload_dict)
 
     if not is_valid:
@@ -1540,7 +1973,7 @@ async def process_single_invoice_document(
             err_kwargs["value"] = error_val
         err_info = SAPErrorTaxonomy.format_error(error_code, **err_kwargs)
 
-        # Route to Human-in-the-Loop if eligible
+        # Route to Human-in-the-Loop if eligible (Missing PO or Missing SES)
         if err_info.get("hitl_eligible"):
             invoice_record = {
                 "trace_id": trace_id,
@@ -1561,6 +1994,16 @@ async def process_single_invoice_document(
                 trace_id=trace_id,
                 severity="WARNING",
                 message=f"Invoice '{filename}' routed to Human-in-the-Loop: {err_info['error_title']}.",
+                metadata={"missing_fields": err_info.get("target_fields")},
+            )
+            # Universal Alert: Send failure alert email to aic1176@aurogroup.com via Power Automate
+            alert_service.send_failure_alert(
+                failure_type="HITL_REVIEW_REQUIRED",
+                filename=filename,
+                trace_id=trace_id,
+                user_email=user_email,
+                error_title=f"HITL Review Required - {err_info['error_title']}",
+                error_detail=err_info.get("error_message", "PO or SES unavailable. Human review required."),
                 metadata={"missing_fields": err_info.get("target_fields")},
             )
             return {
@@ -1617,7 +2060,7 @@ async def process_single_invoice_document(
                 },
             }
 
-    # 7. Valid Invoice: Execute SAP CPI BAPI
+    # 8. Valid Invoice: Execute SAP CPI BAPI & Inspect Response Payload for Duplicates
     cpi_result = submit_to_sap_cpi(trace_id, payload_dict, telemetry)
     elapsed = round(time.time() - t0, 2)
     telemetry["total_exec_time"] = elapsed
@@ -1656,18 +2099,20 @@ async def process_single_invoice_document(
     else:
         sap_err_msg = str(cpi_result.get("sap_message", ""))
         is_pure_duplicate = bool(
-            existing_dup or any(w in sap_err_msg.lower() for w in ["duplicate", "already exists", "already parked", "already entered"])
+            cpi_result.get("status") == "DUPLICATE_DETECTED"
+            or (existing_dup and any(w in sap_err_msg.lower() for w in ["duplicate", "already exists", "already parked", "already entered"]))
+            or any(w in sap_err_msg.lower() for w in ["duplicate", "already exists", "already parked", "already entered"])
         )
 
         if is_pure_duplicate:
-            # Pure duplicate confirmed: present in Firestore and SAP CPI verification rejected re-entry
+            # Pure duplicate confirmed: verified via SAP CPI response payload
             err_info = SAPErrorTaxonomy.format_error(
                 "ERR_DUPLICATE_INVOICE",
                 ref_doc_no=ref_doc_no or "N/A",
                 comp_code=comp_code or "1000",
                 existing_doc=existing_doc or "Existing SAP Document",
             )
-            err_info["error_message"] += f" (Verified via SAP CPI rejection: {sap_err_msg})"
+            err_info["error_message"] += f" (Verified via SAP CPI payload: {sap_err_msg})"
             invoice_record = {
                 "trace_id": trace_id,
                 "filename": filename,
@@ -1686,7 +2131,7 @@ async def process_single_invoice_document(
                 user_email=user_email,
                 trace_id=trace_id,
                 severity="WARNING",
-                message=f"Pure duplicate invoice confirmed: {ref_doc_no} was found in Firestore (#{existing_doc}) and rejected by SAP CPI ({sap_err_msg}).",
+                message=f"Duplicate invoice confirmed in SAP CPI response: {ref_doc_no} (SAP #{existing_doc}). Rejection: {sap_err_msg}",
                 metadata={"ref_doc_no": ref_doc_no, "existing_doc": existing_doc, "cpi_message": sap_err_msg},
             )
 
@@ -1699,8 +2144,7 @@ async def process_single_invoice_document(
                 error_title=f"Duplicate Invoice Prevented - {ref_doc_no}",
                 error_detail=(
                     f"Invoice with Reference '{ref_doc_no}' and Company Code '{comp_code}' "
-                    f"was already processed in SAP (Document #{existing_doc}). "
-                    f"SAP CPI Rejection: {sap_err_msg}"
+                    f"was confirmed as duplicate in SAP CPI response payload: {sap_err_msg}"
                 ),
                 metadata={
                     "ref_doc_no": ref_doc_no,
@@ -1803,103 +2247,198 @@ async def healthz():
     }
 
 
-@app.post("/api/auth/send-magic-link")
-async def send_magic_link_endpoint(payload: Dict[str, Any], request: Request):
+class AuthLoginRequest(BaseModel):
+    identifier: str = Field(..., description="Corporate username or email address")
+    password: str = Field(..., description="Account password")
+
+
+class ForgotPasswordRequest(BaseModel):
+    identifier: str = Field(..., description="Corporate username or email address")
+    redirect_origin: Optional[str] = Field(default=None, description="Application origin URL")
+
+
+class VerifyResetTokenRequest(BaseModel):
+    token: str = Field(..., description="Single-use password reset token")
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(..., description="Single-use password reset token")
+    new_password: str = Field(..., description="New password complying with NIST SP 800-63B guidelines")
+
+
+@app.post("/api/auth/login")
+async def corporate_login(payload: AuthLoginRequest, request: Request):
     """
-    Sends a cryptographically signed, 15-minute single-use magic login link to user's corporate email.
-    Eliminates unverified email access and enforces real corporate mailbox ownership verification.
+    Enterprise Username + Password Authentication Gateway.
+    - Anti-brute-force sliding-window rate limiting (30-min lockout after 5 consecutive failures).
+    - Constant-time verification of PBKDF2-HMAC-SHA512 hashes (600,000 iterations).
+    - Issues tamper-evident HMAC-SHA256 Corporate Session Token.
     """
-    email = (payload.get("email") or "").lower().strip()
-    if not email:
-        raise HTTPException(status_code=400, detail="Corporate email address is required.")
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    identifier = payload.identifier.strip().lower()
+    password = payload.password
 
-    is_allowed = email in ALLOWED_EMAILS or any(
-        email.endswith(f"@{domain}") or email.endswith(f".{domain}") for domain in ALLOWED_DOMAINS
-    )
-    if not is_allowed:
-        audit_service.record_auth_event(email, "FAILED", "Unauthorized domain attempt for magic link")
-        raise HTTPException(status_code=403, detail=f"Access restricted: Email '{email}' is not from an authorized corporate domain.")
+    if not identifier or not password:
+        raise HTTPException(status_code=400, detail="Username/email and password are required.")
 
-    redirect_origin = (payload.get("redirect_origin") or "").strip()
-    if not redirect_origin:
-        redirect_origin = str(request.base_url).rstrip("/")
+    # 1. Anti-Brute Force Rate Limiting & Account Lockout
+    lockout_msg = check_rate_limit_and_lockout(identifier, client_ip)
+    if lockout_msg:
+        audit_service.record_auth_event(identifier, "LOCKED", f"Rate limit lockout: {lockout_msg}")
+        raise HTTPException(status_code=429, detail=lockout_msg)
 
-    token, nonce = create_magic_link_token(email)
-    magic_url = f"{redirect_origin}/?magic_link_token={token}&email={quote(email)}"
+    # 2. Lookup User by Username or Corporate Email
+    user = audit_service.get_user(identifier)
+    if not user:
+        record_failed_login(identifier, client_ip)
+        audit_service.record_auth_event(identifier, "FAILED", "Invalid username or email identifier")
+        raise HTTPException(status_code=401, detail="Invalid username/email or password.")
 
-    # Send the email via Power Automate Webhook and Firestore
-    send_magic_link_email(email, magic_url)
-    audit_service.record_auth_event(email, "LINK_DISPATCHED", f"Secure magic link dispatched to {email}")
+    # 3. Verify Password Hash using constant-time comparison
+    is_valid = verify_password(password, user.get("password_hash", ""))
+    if not is_valid:
+        record_failed_login(identifier, client_ip)
+        audit_service.record_auth_event(user["email"], "FAILED", "Invalid password attempt")
+        raise HTTPException(status_code=401, detail="Invalid username/email or password.")
 
-    return JSONResponse({
-        "status": "LINK_SENT",
-        "email": email,
-        "message": f"A secure passwordless login link has been sent to {email}. Please check your corporate inbox and click the link to sign in."
-    })
+    # 4. Success: Clear failed attempts and generate session
+    reset_login_attempts(identifier, client_ip)
+    audit_service.record_auth_event(user["email"], "SUCCESS", "Enterprise Password Authentication Succeeded")
 
+    session_token = create_corporate_session_token(user["email"])
+    is_admin = is_admin_user(user["email"])
 
-@app.post("/api/auth/verify-magic-link")
-async def verify_magic_link_endpoint(payload: Dict[str, Any]):
-    """
-    Verifies the single-use cryptographic magic link clicked by the user.
-    Enforces HMAC verification, expiration check, and anti-replay nonce invalidation.
-    """
-    token = payload.get("token") or ""
-    email = (payload.get("email") or "").lower().strip()
-    if not token or not email:
-        raise HTTPException(status_code=400, detail="Token and email are required to verify magic link.")
-
-    verified_email = verify_and_consume_magic_link_token(token, email)
-    if not verified_email:
-        audit_service.record_auth_event(email, "FAILED", "Invalid, expired, or already used magic link")
-        raise HTTPException(status_code=401, detail="This sign-in link is invalid, has expired, or has already been used. Please request a new link.")
-
-    # Record successful login event in Cloud Firestore
-    audit_service.record_auth_event(verified_email, "SUCCESS", "Verified Magic Link Single Sign-On")
-
-    # Generate corporate session token
-    session_token = create_corporate_session_token(verified_email)
-
-    # Generate Firebase custom token if available
     custom_token = None
     try:
-        raw_token = firebase_auth.create_custom_token(verified_email, {"email": verified_email, "is_admin": is_admin_user(verified_email)})
+        raw_token = firebase_auth.create_custom_token(user["email"], {"email": user["email"], "is_admin": is_admin})
         custom_token = raw_token.decode("utf-8") if isinstance(raw_token, bytes) else str(raw_token)
     except Exception as exc:
         logger.warning(f"Firebase custom token generation notice: {exc}")
 
     return JSONResponse({
         "status": "SUCCESS",
-        "email": verified_email,
+        "email": user["email"],
+        "username": user["username"],
+        "full_name": user.get("full_name", user["username"]),
+        "role": user.get("role", "user"),
+        "is_admin": is_admin,
         "token": session_token,
         "custom_token": custom_token,
-        "is_admin": is_admin_user(verified_email),
-        "message": f"Welcome, {verified_email}. Single Sign-On authenticated successfully."
+        "message": f"Welcome, {user.get('full_name', user['username'])}. Successfully signed in.",
     })
 
 
-@app.post("/api/auth/login")
-async def corporate_login(payload: Dict[str, Any]):
+@app.post("/api/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest, request: Request):
     """
-    Corporate login requires a verified magic link token.
-    Direct unauthenticated email-only logins are strictly rejected to prevent identity spoofing.
+    Password Recovery Initiator:
+    Generates a cryptographically random 32-byte single-use token (valid 15 mins).
+    Dispatches password reset link via Microsoft Power Automate with audit copy to aic1176@aurogroup.com.
     """
-    token = payload.get("token") or payload.get("magic_link_token")
-    email = (payload.get("email") or "").lower().strip()
-    if token and email:
-        verified_email = verify_and_consume_magic_link_token(token, email)
-        if verified_email:
-            session_token = create_corporate_session_token(verified_email)
-            return JSONResponse({
-                "status": "SUCCESS",
-                "email": verified_email,
-                "token": session_token,
-                "is_admin": is_admin_user(verified_email),
-            })
-    raise HTTPException(
-        status_code=401,
-        detail="Direct email sign-in is disabled for security. Please request a secure login link via /api/auth/send-magic-link."
+    identifier = payload.identifier.strip().lower()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Corporate username or email is required.")
+
+    redirect_origin = (payload.redirect_origin or "").strip()
+    if not redirect_origin:
+        redirect_origin = str(request.base_url).rstrip("/")
+
+    user = audit_service.get_user(identifier)
+    if user:
+        email = user["email"]
+        username = user["username"]
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        exp = time.time() + 900  # 15 minutes validity per NIST SP 800-63B
+
+        audit_service.create_password_reset(email, username, token_hash, exp)
+        reset_url = f"{redirect_origin}/?action=reset-password&token={raw_token}&email={quote(email)}"
+
+        alert_service.send_password_reset_email(email, username, reset_url)
+        audit_service.record_auth_event(email, "PASSWORD_RESET_DISPATCHED", f"Password reset email sent to {email}")
+
+    return JSONResponse({
+        "status": "RESET_DISPATCHED",
+        "message": "If an authorized account matches this identifier, a password reset link has been dispatched via Power Automate to the corporate email address.",
+    })
+
+
+@app.post("/api/auth/verify-reset-token")
+async def verify_reset_token(payload: VerifyResetTokenRequest):
+    """Verifies that a password reset token is valid, unconsumed, and unexpired."""
+    raw_token = payload.token.strip()
+    if not raw_token:
+        raise HTTPException(status_code=400, detail="Token is required.")
+
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    record = audit_service.get_password_reset(token_hash)
+    if not record:
+        raise HTTPException(status_code=400, detail="Password reset token is invalid, expired, or has already been used.")
+
+    return JSONResponse({
+        "status": "VALID",
+        "email": record["email"],
+        "username": record["username"],
+    })
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password(payload: ResetPasswordRequest):
+    """
+    Completes password reset:
+    - Enforces NIST SP 800-63B complexity (min 8 chars, mixed case, digit, special char).
+    - Hashes with PBKDF2-HMAC-SHA512 (600,000 iterations).
+    - Invalidates the single-use reset token immediately.
+    """
+    raw_token = payload.token.strip()
+    new_password = payload.new_password
+
+    if not raw_token or not new_password:
+        raise HTTPException(status_code=400, detail="Token and new password are required.")
+
+    # Validate complexity
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters in length.")
+    if not re.search(r"[A-Z]", new_password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter.")
+    if not re.search(r"[a-z]", new_password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one lowercase letter.")
+    if not re.search(r"\d", new_password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one numeric digit.")
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", new_password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one special character.")
+
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    record = audit_service.get_password_reset(token_hash)
+    if not record:
+        raise HTTPException(status_code=400, detail="Password reset token is invalid, expired, or has already been used.")
+
+    username = record["username"]
+    user = audit_service.get_user(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User account not found.")
+
+    new_hash = hash_password(new_password)
+    user["password_hash"] = new_hash
+    user["updated_at"] = audit_service.now_iso()
+    audit_service.save_user(user)
+
+    audit_service.consume_password_reset(token_hash)
+    audit_service.record_auth_event(user["email"], "PASSWORD_RESET_SUCCESS", f"Password updated for user {username}")
+
+    alert_service.send_failure_alert(
+        failure_type="SECURITY_PASSWORD_CHANGED",
+        filename="identity_gateway",
+        trace_id=f"pwd_{username}",
+        user_email=user["email"],
+        error_title="Security Notice: Password Reset Completed",
+        error_detail=f"The account password for {user['email']} ({username}) was successfully reset via Power Automate link.",
     )
+
+    return JSONResponse({
+        "status": "SUCCESS",
+        "message": "Password updated successfully. You may now log in with your new credentials.",
+    })
 
 
 @app.post("/api/auth/session-from-firebase")
@@ -2017,8 +2556,11 @@ async def park_invoices_batch(
 ):
     """
     Sequential batch processor: Processes documents ONE AT A TIME.
-    The next document begins strictly after the previous document completes.
-    Returns an array of individual responses for each uploaded file.
+    Implements Scenario 2: Intra-batch duplicate detection (human error).
+    - If user uploads duplicate documents in the same batch:
+      * Only the first occurrence is considered and parked in SAP through CPI.
+      * The duplicate document is flagged as BATCH_DUPLICATE_DETECTED, prevented from posting to SAP,
+        and triggers a failure notification email via Power Automate to aic1176@aurogroup.com.
     """
     user_email = verify_corporate_user(authorization, x_firebase_token)
 
@@ -2026,6 +2568,9 @@ async def park_invoices_batch(
         raise HTTPException(status_code=400, detail="No files uploaded.")
 
     results = []
+    batch_seen_hashes: Dict[str, str] = {}
+    batch_seen_invoices: Dict[Tuple[str, str], str] = {}
+
     audit_service.log_event(
         event_type="BATCH_JOB_STARTED",
         user_email=user_email,
@@ -2052,11 +2597,66 @@ async def park_invoices_batch(
             results.append(err_res)
             continue
 
+        file_sha256 = hashlib.sha256(content).hexdigest()
+
+        # Scenario 2 Check: Exact file duplicate in this batch
+        if file_sha256 in batch_seen_hashes:
+            orig_name = batch_seen_hashes[file_sha256]
+            trace_id = str(uuid.uuid4())[:8]
+            err_info = SAPErrorTaxonomy.format_error(
+                "ERR_BATCH_DUPLICATE",
+                filename=f.filename,
+                original_doc=orig_name,
+            )
+            invoice_record = {
+                "trace_id": trace_id,
+                "filename": f.filename,
+                "file_size": len(content),
+                "submitted_by": user_email,
+                "status": "BATCH_DUPLICATE_DETECTED",
+                "error_info": err_info,
+                "extracted_data": {},
+                "sap_document_number": None,
+                "telemetry": {"submitted_by": user_email, "original_file": orig_name},
+            }
+            audit_service.save_invoice(invoice_record)
+            audit_service.log_event(
+                event_type="BATCH_DUPLICATE_FLAGGED",
+                user_email=user_email,
+                trace_id=trace_id,
+                severity="WARNING",
+                message=f"Intra-batch duplicate detected: '{f.filename}' has identical content to '{orig_name}' in this upload batch. Skipped CPI parking.",
+                metadata={"original_file": orig_name},
+            )
+            alert_service.send_failure_alert(
+                failure_type="BATCH_DUPLICATE_DETECTED",
+                filename=f.filename,
+                trace_id=trace_id,
+                user_email=user_email,
+                error_title=f"Intra-Batch Duplicate Document Flagged: '{f.filename}'",
+                error_detail=(
+                    f"Document '{f.filename}' is an intra-batch duplicate of '{orig_name}'. "
+                    f"Only the first copy was considered and parked; this duplicate was flagged, skipped, and prevented from double-posting to SAP."
+                ),
+                metadata={"original_file": orig_name},
+            )
+            results.append({
+                "status": "BATCH_DUPLICATE_DETECTED",
+                "trace_id": trace_id,
+                "filename": f.filename,
+                "error_info": err_info,
+                "extracted_data": {},
+            })
+            continue
+
+        batch_seen_hashes[file_sha256] = f.filename
+
         try:
             doc_result = await process_single_invoice_document(
                 filename=f.filename,
                 content=content,
                 user_email=user_email,
+                batch_seen_invoices=batch_seen_invoices,
             )
             results.append(doc_result)
         except Exception as exc:
@@ -2082,7 +2682,7 @@ async def park_invoices_batch(
         user_email=user_email,
         trace_id=None,
         severity="INFO",
-        message=f"Sequential processing complete. Total: {len(results)}, Parked: {sum(1 for r in results if r.get('status') == 'PARKED_SUCCESS')}, HITL: {sum(1 for r in results if r.get('status') == 'HITL_REQUIRED')}.",
+        message=f"Sequential processing complete. Total: {len(results)}, Parked: {sum(1 for r in results if r.get('status') == 'PARKED_SUCCESS')}, HITL: {sum(1 for r in results if r.get('status') == 'HITL_REQUIRED')}, Batch Duplicates: {sum(1 for r in results if r.get('status') == 'BATCH_DUPLICATE_DETECTED')}.",
     )
 
     return JSONResponse(content={
@@ -2100,8 +2700,11 @@ async def resolve_hitl_invoice(
 ):
     """
     Human-in-the-Loop (HITL) Resolution Endpoint:
-    Allows an authorized AP officer or administrator to provide missing/corrected information
-    (e.g., PO Number, SES, RefDocNo, Taxable Base) and resume the SAP CPI parking flow.
+    Enforces MAANG-grade guardrails:
+    1. Multi-User RBAC: Standard users can only resolve invoices they submitted.
+       Administrator (aic1176@aurogroup.com) can resolve any invoice.
+    2. Field Locking: ONLY PONumber and SES are editable. All other fields are locked and read-only.
+    3. Mandatory Rules: Only PONumber is mandatory (10 numeric digits). SES is optional (10 digits starting with 1).
     """
     user_email = verify_corporate_user(authorization, x_firebase_token)
 
@@ -2109,33 +2712,60 @@ async def resolve_hitl_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail=f"Invoice with trace ID '{trace_id}' not found.")
 
-    if invoice.get("status") not in ("HITL_REQUIRED", "VALIDATION_FAILED", "SAP_REJECTED"):
+    # 1. RBAC Isolation Check
+    is_admin = is_admin_user(user_email)
+    submitted_by = (invoice.get("submitted_by") or "").strip().lower()
+    if not is_admin and submitted_by and submitted_by != user_email.lower():
+        audit_service.log_event(
+            event_type="RBAC_ACCESS_DENIED",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="WARNING",
+            message=f"RBAC violation: User {user_email} attempted to resolve invoice owned by {submitted_by}.",
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Multi-user isolation policy restricts you to resolving invoices uploaded by your account."
+        )
+
+    if invoice.get("status") not in ("HITL_REQUIRED", "VALIDATION_FAILED", "SAP_REJECTED", "IRRELEVANT_DOC_PENDING"):
         raise HTTPException(
             status_code=400,
             detail=f"Invoice is currently in status '{invoice.get('status')}' and does not require intervention."
         )
 
-    # Merge corrected fields into extracted HeaderData
     extracted_data = invoice.get("extracted_data", {})
     header = extracted_data.setdefault("HeaderData", {})
-
     corrections = payload.get("corrections", {})
-    for key, val in corrections.items():
-        if val is not None and str(val).strip() != "":
-            # Normalize date to DD.MM.YYYY if needed for SAP ABAP
-            if key == "DocDate" and isinstance(val, str) and "-" in val:
-                parts = val.strip().split("-")
-                if len(parts) == 3 and len(parts[0]) == 4:
-                    val = f"{parts[2]}.{parts[1]}.{parts[0]}"
-            header[key] = val
+
+    # 2. Strict Field Locking: ONLY PONumber and SES can be edited!
+    po_raw = str(corrections.get("PONumber") or header.get("PONumber") or "").strip()
+    if not po_raw:
+        raise HTTPException(status_code=422, detail="PO Number is mandatory. Please provide a valid 10-digit Purchase Order.")
+    if not re.match(r"^\d{10}$", po_raw):
+        raise HTTPException(status_code=422, detail=f"Invalid PO Number '{po_raw}'. Purchase Order must be exactly 10 numeric digits (e.g. 4500123456).")
+    header["PONumber"] = po_raw
+
+    # Validate SES (Optional: if provided, must be 10 digits starting with 1)
+    if "SES" in corrections:
+        ses_raw = str(corrections.get("SES") or "").strip()
+        if ses_raw:
+            if not re.match(r"^1\d{9}$", ses_raw):
+                raise HTTPException(status_code=422, detail=f"Invalid SES Number '{ses_raw}'. Service Entry Sheet must be a 10-digit number starting with 1 (e.g. 1000123456).")
+            header["SES"] = ses_raw
+        else:
+            header["SES"] = None
+
+    # NOTE: All other fields (RefDocNo, CompCode, DocDate, BusinessPlace, TaxableVal, TotalInvVal, ItemData)
+    # remain strictly locked as originally extracted and cannot be altered.
 
     audit_service.log_event(
         event_type="HITL_RESOLUTION_ATTEMPTED",
         user_email=user_email,
         trace_id=trace_id,
         severity="INFO",
-        message=f"User {user_email} (Admin: {is_admin_user(user_email)}) submitted human corrections for invoice '{trace_id}': {list(corrections.keys())}.",
-        metadata={"corrections": corrections},
+        message=f"User {user_email} (Admin: {is_admin}) submitted HITL updates for invoice '{trace_id}': PO={header.get('PONumber')}, SES={header.get('SES')}.",
+        metadata={"po": header.get("PONumber"), "ses": header.get("SES")},
     )
 
     # Re-validate
@@ -2150,7 +2780,7 @@ async def resolve_hitl_invoice(
             "status": "HITL_REQUIRED",
             "trace_id": trace_id,
             "error_info": err_info,
-            "message": "Human input validation failed. Please check field formats.",
+            "message": "Validation failed against SAP rules. Please check PO and SES formats.",
             "extracted_data": extracted_data,
         })
 
@@ -2226,7 +2856,7 @@ async def resolve_hitl_invoice(
                 metadata={"ref_doc_no": ref_doc_no, "existing_doc": existing_doc, "cpi_message": sap_err_msg},
             )
 
-            # TRIGGER FAILURE ALERT EMAIL TO aic1176@aurogroup.com
+            # Failure Alert via Power Automate
             alert_incident = alert_service.send_failure_alert(
                 failure_type="DUPLICATE_INVOICE_PREVENTED",
                 filename=invoice.get("filename", "unknown"),
@@ -2296,6 +2926,47 @@ async def resolve_hitl_invoice(
             })
 
 
+@app.post("/api/invoices/{trace_id}/discard-irrelevant")
+async def discard_irrelevant_invoice(
+    trace_id: str,
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """
+    Allows reviewer or administrator to discard an irrelevant document with ONE CLICK.
+    Per specification, no manual field entry is required for irrelevant documents.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+    invoice = audit_service.get_invoice(trace_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail=f"Invoice '{trace_id}' not found.")
+
+    is_admin = is_admin_user(user_email)
+    submitted_by = (invoice.get("submitted_by") or "").strip().lower()
+    if not is_admin and submitted_by and submitted_by != user_email.lower():
+        raise HTTPException(status_code=403, detail="Forbidden: You can only discard documents uploaded by your account.")
+
+    invoice["status"] = "DISCARDED_IRRELEVANT"
+    invoice["discarded_by"] = user_email
+    invoice["discarded_at"] = audit_service.now_iso()
+    audit_service.save_invoice(invoice)
+
+    audit_service.log_event(
+        event_type="IRRELEVANT_DOCUMENT_DISCARDED",
+        user_email=user_email,
+        trace_id=trace_id,
+        severity="INFO",
+        message=f"User {user_email} confirmed and discarded irrelevant document '{invoice.get('filename')}'.",
+    )
+
+    return JSONResponse(content={
+        "status": "DISCARDED_IRRELEVANT",
+        "trace_id": trace_id,
+        "filename": invoice.get("filename"),
+        "message": "Document confirmed as irrelevant and successfully discarded.",
+    })
+
+
 # ---------------------------------------------------------
 # 12. ADMIN MIS & MONITORING ENDPOINTS
 # ---------------------------------------------------------
@@ -2304,10 +2975,19 @@ async def get_mis_dashboard(
     authorization: Optional[str] = Header(default=None),
     x_firebase_token: Optional[str] = Header(default=None),
 ):
-    """Returns executive KPI statistics, status counts, and recent activity for the MIS Dashboard."""
-    verify_corporate_user(authorization, x_firebase_token)
-    metrics = audit_service.get_mis_metrics()
-    metrics["incident_alerts_count"] = len(alert_service.list_incidents())
+    """
+    Returns executive KPI statistics and status counts with strict multi-user isolation.
+    - Standard users only see statistics for their own uploads.
+    - Administrator (aic1176@aurogroup.com) views organization-wide statistics.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+    is_admin = is_admin_user(user_email)
+    metrics = audit_service.get_mis_metrics(user_email=user_email, is_admin=is_admin)
+    all_incidents = alert_service.list_incidents()
+    if is_admin:
+        metrics["incident_alerts_count"] = len(all_incidents)
+    else:
+        metrics["incident_alerts_count"] = len([i for i in all_incidents if (i.get("user_email") or "").lower() == user_email.lower()])
     return JSONResponse(content=metrics)
 
 
@@ -2319,9 +2999,19 @@ async def list_invoices_endpoint(
     authorization: Optional[str] = Header(default=None),
     x_firebase_token: Optional[str] = Header(default=None),
 ):
-    """Returns filterable, paginated invoices stored in Cloud Firestore."""
-    verify_corporate_user(authorization, x_firebase_token)
-    invoices = audit_service.list_invoices(status=status, search=search, limit=limit)
+    """
+    Returns filterable invoices stored in Cloud Firestore.
+    Enforces strict tenant isolation: Standard users only receive their own submitted documents.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+    is_admin = is_admin_user(user_email)
+    invoices = audit_service.list_invoices(
+        status=status,
+        search=search,
+        limit=limit,
+        user_email=user_email,
+        is_admin=is_admin,
+    )
 
     sanitized = []
     for inv in invoices:
@@ -2341,10 +3031,14 @@ async def get_hitl_queue(
     authorization: Optional[str] = Header(default=None),
     x_firebase_token: Optional[str] = Header(default=None),
 ):
-    """Returns all invoices awaiting Human-in-the-Loop review and correction (HITL_REQUIRED or SAP_REJECTED)."""
-    verify_corporate_user(authorization, x_firebase_token)
-    all_inv = audit_service.list_invoices(limit=200)
-    pending = [i for i in all_inv if i.get("status") in ("HITL_REQUIRED", "SAP_REJECTED")]
+    """
+    Returns invoices awaiting Human-in-the-Loop review (HITL_REQUIRED, SAP_REJECTED, IRRELEVANT_DOC_PENDING).
+    Filtered by uploader identity for non-administrators.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+    is_admin = is_admin_user(user_email)
+    all_inv = audit_service.list_invoices(limit=200, user_email=user_email, is_admin=is_admin)
+    pending = [i for i in all_inv if i.get("status") in ("HITL_REQUIRED", "SAP_REJECTED", "IRRELEVANT_DOC_PENDING")]
 
     sanitized = []
     for inv in pending:
@@ -2365,9 +3059,13 @@ async def get_audit_logs(
     authorization: Optional[str] = Header(default=None),
     x_firebase_token: Optional[str] = Header(default=None),
 ):
-    """Returns chronological audit events from Cloud Firestore (Mumbai asia-south1)."""
-    verify_corporate_user(authorization, x_firebase_token)
-    logs = audit_service.list_audit_logs(limit=limit)
+    """
+    Returns chronological audit events from Cloud Firestore (Mumbai asia-south1).
+    Standard users only see audit trail events associated with their activity.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+    is_admin = is_admin_user(user_email)
+    logs = audit_service.list_audit_logs(limit=limit, user_email=user_email, is_admin=is_admin)
     return JSONResponse(content={"audit_logs": logs, "count": len(logs)})
 
 
@@ -2378,13 +3076,81 @@ async def get_incident_alerts(
     x_firebase_token: Optional[str] = Header(default=None),
 ):
     """Returns automated failure incidents and notification dispatches to aic1176@aurogroup.com."""
-    verify_corporate_user(authorization, x_firebase_token)
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+    is_admin = is_admin_user(user_email)
     incidents = alert_service.list_incidents(limit=limit)
+    if not is_admin:
+        incidents = [i for i in incidents if (i.get("user_email") or "").lower() == user_email.lower()]
+
     return JSONResponse(content={
         "recipient": alert_service.recipient_email,
         "alerts": incidents,
         "incident_alerts": incidents,
         "count": len(incidents),
+    })
+
+
+@app.post("/api/admin/trigger-monthly-mis")
+async def trigger_monthly_mis_report(
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """
+    Admin-only endpoint to trigger and dispatch the automated Monthly Executive MIS Report
+    via Microsoft Power Automate to aic1176@aurogroup.com.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+    if not is_admin_user(user_email):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Only administrator (aic1176@aurogroup.com) can trigger monthly executive MIS reports."
+        )
+
+    month_str = datetime.now(timezone.utc).strftime("%B %Y")
+    metrics = audit_service.get_mis_metrics(is_admin=True)
+
+    # Build user breakdown
+    all_invoices = audit_service.list_invoices(limit=500, is_admin=True)
+    breakdown_map: Dict[str, Dict[str, Any]] = {}
+    for inv in all_invoices:
+        submitter = (inv.get("submitted_by") or "unknown").lower()
+        if submitter not in breakdown_map:
+            breakdown_map[submitter] = {"user": submitter, "total": 0, "parked": 0, "hitl": 0, "failed": 0}
+        breakdown_map[submitter]["total"] += 1
+        st = inv.get("status")
+        if st == "PARKED_SUCCESS":
+            breakdown_map[submitter]["parked"] += 1
+        elif st in ("HITL_REQUIRED", "IRRELEVANT_DOC_PENDING"):
+            breakdown_map[submitter]["hitl"] += 1
+        else:
+            breakdown_map[submitter]["failed"] += 1
+
+    delivered = alert_service.send_monthly_mis_digest(
+        month_str=month_str,
+        metrics=metrics,
+        user_breakdown=list(breakdown_map.values()),
+    )
+
+    audit_service.log_event(
+        event_type="MONTHLY_MIS_REPORT_DISPATCHED",
+        user_email=user_email,
+        trace_id=None,
+        severity="INFO",
+        message=f"Monthly MIS report for {month_str} dispatched to {alert_service.recipient_email} via Power Automate.",
+        metadata={"month": month_str, "delivered": delivered},
+    )
+
+    return JSONResponse(content={
+        "status": "DISPATCHED" if delivered else "QUEUED",
+        "recipient": alert_service.recipient_email,
+        "month": month_str,
+        "metrics_summary": {
+            "total_invoices": metrics.get("total_invoices", 0),
+            "parked_success": metrics.get("parked_success", 0),
+            "hitl_pending": metrics.get("hitl_pending", 0),
+            "duplicates": metrics.get("duplicate_detected", 0),
+        },
+        "delivered_via_power_automate": delivered,
     })
 
 
@@ -2417,3 +3183,51 @@ async def test_alert_notification(
             "recipient": target,
         }
     })
+
+
+# ---------------------------------------------------------
+# 13. AUTOMATED BACKGROUND MONTHLY MIS SCHEDULER
+# ---------------------------------------------------------
+_LAST_MONTHLY_REPORT_SENT_MONTH: Optional[str] = None
+
+async def _periodic_monthly_mis_checker():
+    """Background task running continuously to dispatch the monthly executive digest on the 1st of every month."""
+    global _LAST_MONTHLY_REPORT_SENT_MONTH
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            current_month = now.strftime("%Y-%m")
+            if now.day == 1 and _LAST_MONTHLY_REPORT_SENT_MONTH != current_month:
+                month_str = now.strftime("%B %Y")
+                metrics = audit_service.get_mis_metrics(is_admin=True)
+                all_invoices = audit_service.list_invoices(limit=500, is_admin=True)
+                breakdown_map: Dict[str, Dict[str, Any]] = {}
+                for inv in all_invoices:
+                    sub = (inv.get("submitted_by") or "unknown").lower()
+                    if sub not in breakdown_map:
+                        breakdown_map[sub] = {"user": sub, "total": 0, "parked": 0, "hitl": 0, "failed": 0}
+                    breakdown_map[sub]["total"] += 1
+                    st = inv.get("status")
+                    if st == "PARKED_SUCCESS":
+                        breakdown_map[sub]["parked"] += 1
+                    elif st in ("HITL_REQUIRED", "IRRELEVANT_DOC_PENDING"):
+                        breakdown_map[sub]["hitl"] += 1
+                    else:
+                        breakdown_map[sub]["failed"] += 1
+
+                delivered = alert_service.send_monthly_mis_digest(
+                    month_str=month_str,
+                    metrics=metrics,
+                    user_breakdown=list(breakdown_map.values()),
+                )
+                _LAST_MONTHLY_REPORT_SENT_MONTH = current_month
+                logger.info(f"Automated monthly MIS digest delivered for {month_str} to {ALERT_EMAIL_RECIPIENT} (Status: {delivered}).")
+        except Exception as e:
+            logger.warning(f"Periodic monthly MIS scheduler check error: {e}")
+        await asyncio.sleep(3600)  # Check every hour
+
+
+@app.on_event("startup")
+async def start_background_schedulers():
+    """Starts background automation workers on application boot."""
+    asyncio.create_task(_periodic_monthly_mis_checker())
