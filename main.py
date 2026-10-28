@@ -489,11 +489,11 @@ class AlertNotificationService:
         success_pct = round((parked / total_inv * 100), 1) if total_inv else 0.0
 
         user_rows = "".join([
-            f"<tr><td style='padding:6px 10px; border-bottom:1px solid #e2e8f0;'><code>{u.get('email')}</code></td>"
-            f"<td style='padding:6px 10px; border-bottom:1px solid #e2e8f0; text-align:center;'>{u.get('total', 0)}</td>"
-            f"<td style='padding:6px 10px; border-bottom:1px solid #e2e8f0; text-align:center; color:#15803d; font-weight:600;'>{u.get('parked', 0)}</td>"
-            f"<td style='padding:6px 10px; border-bottom:1px solid #e2e8f0; text-align:center; color:#b45309;'>{u.get('hitl', 0)}</td>"
-            f"<td style='padding:6px 10px; border-bottom:1px solid #e2e8f0; text-align:right;'>₹ {round(u.get('gross', 0.0), 2):,}</td></tr>"
+            f"<tr><td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; font-family:monospace; font-size:12px;'><code>{u.get('email') or u.get('user') or 'Corporate User'}</code></td>"
+            f"<td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; text-align:center;'>{u.get('total', 0)}</td>"
+            f"<td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; text-align:center; color:#15803d; font-weight:700;'>{u.get('parked', 0)}</td>"
+            f"<td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; text-align:center; color:#b45309; font-weight:600;'>{u.get('hitl', 0)}</td>"
+            f"<td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; text-align:right; font-family:monospace; font-weight:600;'>₹ {round(float(u.get('gross', 0.0) or 0.0), 2):,.2f}</td></tr>"
             for u in user_breakdown
         ])
 
@@ -506,23 +506,26 @@ class AlertNotificationService:
                     <p style="color: #94a3b8; margin: 4px 0 0 0; font-size: 13px;">Monthly Executive Performance Digest &bull; {month_str}</p>
                 </div>
                 <div style="padding: 24px;">
-                    <div style="display: flex; gap: 12px; margin-bottom: 20px;">
-                        <div style="flex: 1; padding: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px;">
-                            <div style="font-size: 11px; color: #166534; font-weight: bold; text-transform: uppercase;">Total Parked (MIR7)</div>
-                            <div style="font-size: 22px; font-weight: bold; color: #15803d; margin-top: 4px;">{parked} / {total_inv}</div>
-                            <div style="font-size: 11px; color: #15803d; margin-top: 2px;">{success_pct}% Automation Rate</div>
-                        </div>
-                        <div style="flex: 1; padding: 12px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px;">
-                            <div style="font-size: 11px; color: #1e40af; font-weight: bold; text-transform: uppercase;">Gross Financial Volume</div>
-                            <div style="font-size: 22px; font-weight: bold; color: #1d4ed8; margin-top: 4px;">₹ {gross_val:,.2f}</div>
-                            <div style="font-size: 11px; color: #3b82f6; margin-top: 2px;">Taxable: ₹ {taxable_val:,.2f}</div>
-                        </div>
-                        <div style="flex: 1; padding: 12px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px;">
-                            <div style="font-size: 11px; color: #991b1b; font-weight: bold; text-transform: uppercase;">Duplicates Prevented</div>
-                            <div style="font-size: 22px; font-weight: bold; color: #b91c1c; margin-top: 4px;">{duplicates}</div>
-                            <div style="font-size: 11px; color: #dc2626; margin-top: 2px;">HITL Interventions: {hitl}</div>
-                        </div>
-                    </div>
+                    <!-- Email client robust table for 3-card layout (supports Outlook/Power Automate) -->
+                    <table style="width: 100%; border-collapse: separate; border-spacing: 10px 0; margin-bottom: 20px;" cellpadding="0" cellspacing="0">
+                        <tr>
+                            <td style="width: 33.33%; padding: 14px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; vertical-align: top;">
+                                <div style="font-size: 11px; color: #166534; font-weight: bold; text-transform: uppercase;">Total Parked (MIR7)</div>
+                                <div style="font-size: 24px; font-weight: bold; color: #15803d; margin-top: 4px;">{parked} / {total_inv}</div>
+                                <div style="font-size: 11px; color: #15803d; margin-top: 2px;">{success_pct}% Automation Rate</div>
+                            </td>
+                            <td style="width: 33.33%; padding: 14px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; vertical-align: top;">
+                                <div style="font-size: 11px; color: #1e40af; font-weight: bold; text-transform: uppercase;">Gross Financial Volume</div>
+                                <div style="font-size: 24px; font-weight: bold; color: #1d4ed8; margin-top: 4px;">₹ {gross_val:,.2f}</div>
+                                <div style="font-size: 11px; color: #3b82f6; margin-top: 2px;">Taxable: ₹ {taxable_val:,.2f}</div>
+                            </td>
+                            <td style="width: 33.33%; padding: 14px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; vertical-align: top;">
+                                <div style="font-size: 11px; color: #991b1b; font-weight: bold; text-transform: uppercase;">Duplicates Prevented</div>
+                                <div style="font-size: 24px; font-weight: bold; color: #b91c1c; margin-top: 4px;">{duplicates}</div>
+                                <div style="font-size: 11px; color: #dc2626; margin-top: 2px;">HITL Interventions: {hitl}</div>
+                            </td>
+                        </tr>
+                    </table>
 
                     <h3 style="font-size: 14px; color: #0f172a; margin: 18px 0 8px 0; border-bottom: 2px solid #f1f5f9; padding-bottom: 6px;">User Activity Breakdown</h3>
                     <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 20px;">
@@ -1145,6 +1148,55 @@ class FirestoreAuditService:
             "admin_email": ALERT_EMAIL_RECIPIENT,
             "alert_recipient": ALERT_EMAIL_RECIPIENT,
         }
+
+    def get_user_mis_breakdown(self, is_admin: bool = True) -> List[Dict[str, Any]]:
+        """Computes per-user activity and financial metrics for executive MIS reporting."""
+        all_invoices = self.list_invoices(limit=500, is_admin=is_admin)
+        breakdown_map: Dict[str, Dict[str, Any]] = {}
+        for inv in all_invoices:
+            submitter = (inv.get("submitted_by") or inv.get("user_email") or "").strip().lower()
+            if not submitter or submitter in ("none", "null", "unknown"):
+                submitter = ALERT_EMAIL_RECIPIENT.lower()
+            if submitter not in breakdown_map:
+                breakdown_map[submitter] = {
+                    "email": submitter,
+                    "user": submitter,
+                    "total": 0,
+                    "parked": 0,
+                    "hitl": 0,
+                    "failed": 0,
+                    "gross": 0.0,
+                    "taxable": 0.0,
+                    "success_rate": 0.0,
+                }
+            breakdown_map[submitter]["total"] += 1
+            st = inv.get("status")
+            if st == "PARKED_SUCCESS":
+                breakdown_map[submitter]["parked"] += 1
+            elif st in ("HITL_REQUIRED", "IRRELEVANT_DOC_PENDING"):
+                breakdown_map[submitter]["hitl"] += 1
+            else:
+                breakdown_map[submitter]["failed"] += 1
+
+            h = inv.get("extracted_data", {}).get("HeaderData", {})
+            try:
+                val_gross = float(h.get("TotalInvVal", 0) or inv.get("total_inv_val", 0) or 0)
+                breakdown_map[submitter]["gross"] += val_gross
+            except Exception:
+                pass
+            try:
+                val_tax = float(h.get("TaxableVal", 0) or inv.get("taxable_val", 0) or 0)
+                breakdown_map[submitter]["taxable"] += val_tax
+            except Exception:
+                pass
+
+        for entry in breakdown_map.values():
+            tot = entry["total"]
+            entry["success_rate"] = round((entry["parked"] / tot * 100), 1) if tot > 0 else 0.0
+            entry["gross"] = round(entry["gross"], 2)
+            entry["taxable"] = round(entry["taxable"], 2)
+
+        return sorted(list(breakdown_map.values()), key=lambda x: x["total"], reverse=True)
 
 
 audit_service = FirestoreAuditService(firestore_client)
@@ -3000,8 +3052,10 @@ async def get_mis_dashboard(
     all_incidents = alert_service.list_incidents()
     if is_admin:
         metrics["incident_alerts_count"] = len(all_incidents)
+        metrics["user_breakdown"] = audit_service.get_user_mis_breakdown(is_admin=True)
     else:
         metrics["incident_alerts_count"] = len([i for i in all_incidents if (i.get("user_email") or "").lower() == user_email.lower()])
+        metrics["user_breakdown"] = [u for u in audit_service.get_user_mis_breakdown(is_admin=False) if u.get("email") == user_email.lower()]
     return JSONResponse(content=metrics)
 
 
@@ -3122,27 +3176,12 @@ async def trigger_monthly_mis_report(
 
     month_str = datetime.now(timezone.utc).strftime("%B %Y")
     metrics = audit_service.get_mis_metrics(is_admin=True)
-
-    # Build user breakdown
-    all_invoices = audit_service.list_invoices(limit=500, is_admin=True)
-    breakdown_map: Dict[str, Dict[str, Any]] = {}
-    for inv in all_invoices:
-        submitter = (inv.get("submitted_by") or "unknown").lower()
-        if submitter not in breakdown_map:
-            breakdown_map[submitter] = {"user": submitter, "total": 0, "parked": 0, "hitl": 0, "failed": 0}
-        breakdown_map[submitter]["total"] += 1
-        st = inv.get("status")
-        if st == "PARKED_SUCCESS":
-            breakdown_map[submitter]["parked"] += 1
-        elif st in ("HITL_REQUIRED", "IRRELEVANT_DOC_PENDING"):
-            breakdown_map[submitter]["hitl"] += 1
-        else:
-            breakdown_map[submitter]["failed"] += 1
+    user_breakdown = audit_service.get_user_mis_breakdown(is_admin=True)
 
     delivered = alert_service.send_monthly_mis_digest(
         month_str=month_str,
         metrics=metrics,
-        user_breakdown=list(breakdown_map.values()),
+        user_breakdown=user_breakdown,
     )
 
     audit_service.log_event(
@@ -3214,25 +3253,12 @@ async def _periodic_monthly_mis_checker():
             if now.day == 1 and _LAST_MONTHLY_REPORT_SENT_MONTH != current_month:
                 month_str = now.strftime("%B %Y")
                 metrics = audit_service.get_mis_metrics(is_admin=True)
-                all_invoices = audit_service.list_invoices(limit=500, is_admin=True)
-                breakdown_map: Dict[str, Dict[str, Any]] = {}
-                for inv in all_invoices:
-                    sub = (inv.get("submitted_by") or "unknown").lower()
-                    if sub not in breakdown_map:
-                        breakdown_map[sub] = {"user": sub, "total": 0, "parked": 0, "hitl": 0, "failed": 0}
-                    breakdown_map[sub]["total"] += 1
-                    st = inv.get("status")
-                    if st == "PARKED_SUCCESS":
-                        breakdown_map[sub]["parked"] += 1
-                    elif st in ("HITL_REQUIRED", "IRRELEVANT_DOC_PENDING"):
-                        breakdown_map[sub]["hitl"] += 1
-                    else:
-                        breakdown_map[sub]["failed"] += 1
+                user_breakdown = audit_service.get_user_mis_breakdown(is_admin=True)
 
                 delivered = alert_service.send_monthly_mis_digest(
                     month_str=month_str,
                     metrics=metrics,
-                    user_breakdown=list(breakdown_map.values()),
+                    user_breakdown=user_breakdown,
                 )
                 _LAST_MONTHLY_REPORT_SENT_MONTH = current_month
                 logger.info(f"Automated monthly MIS digest delivered for {month_str} to {ALERT_EMAIL_RECIPIENT} (Status: {delivered}).")

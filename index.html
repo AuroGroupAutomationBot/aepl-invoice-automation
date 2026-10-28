@@ -236,10 +236,11 @@
     /* Main Content Area */
     .app-main {
       flex: 1;
-      max-width: 1040px;
+      max-width: 1360px;
       width: 100%;
-      margin: 28px auto;
+      margin: 24px auto;
       padding: 0 20px;
+      transition: max-width 0.25s ease;
     }
 
     /* Card Surface */
@@ -668,7 +669,7 @@
     }
     .mono-val { font-family: var(--font-mono); }
 
-    /* Line Items Table */
+    /* Line Items Table & Enterprise Data Grids */
     .table-responsive {
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
@@ -676,13 +677,13 @@
       border-radius: var(--radius-sm);
       margin: 14px 0;
       background: #ffffff;
+      width: 100%;
     }
     .invoice-table {
       width: 100%;
       border-collapse: collapse;
       font-size: 12px;
       text-align: left;
-      min-width: 580px;
     }
     .invoice-table th {
       background: var(--slate-100);
@@ -691,14 +692,15 @@
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.04em;
-      padding: 9px 12px;
+      padding: 9px 10px;
       border-bottom: 1px solid var(--slate-200);
       white-space: nowrap;
     }
     .invoice-table td {
-      padding: 9px 12px;
+      padding: 8px 10px;
       border-bottom: 1px solid var(--slate-100);
       color: var(--slate-800);
+      vertical-align: middle;
     }
     .invoice-table tr:hover { background: var(--slate-50); }
 
@@ -963,6 +965,77 @@
       .sap-hero-banner { flex-direction: column; align-items: stretch; }
       .btn-action-copy { width: 100%; justify-content: center; }
       .filters-bar { flex-direction: column; align-items: stretch; }
+    }
+
+    /* MAANG-Grade Print & Landscape PDF Export Styles */
+    @media print {
+      @page {
+        size: landscape;
+        margin: 8mm;
+      }
+      body {
+        background: #ffffff !important;
+        color: #0f172a !important;
+        font-size: 9px !important;
+      }
+      .app-header, .portal-tabs-nav, .filters-bar, #btnTriggerMonthlyMIS, .btn-primary, .btn-secondary, button {
+        display: none !important;
+      }
+      .app-main {
+        max-width: 100% !important;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+      }
+      .portal-card {
+        border: none !important;
+        box-shadow: none !important;
+        overflow: visible !important;
+        margin-bottom: 12px !important;
+      }
+      .portal-body {
+        padding: 0 !important;
+      }
+      .table-responsive {
+        overflow: visible !important;
+        border: 1px solid #cbd5e1 !important;
+        page-break-inside: auto;
+        margin: 8px 0 !important;
+      }
+      .invoice-table {
+        width: 100% !important;
+        min-width: 0 !important;
+        font-size: 8.5px !important;
+        table-layout: auto !important;
+      }
+      .invoice-table th, .invoice-table td {
+        padding: 4px 6px !important;
+        white-space: normal !important;
+        word-break: break-word !important;
+      }
+      .invoice-table th {
+        background: #f1f5f9 !important;
+        color: #0f172a !important;
+        font-weight: 700 !important;
+      }
+      .invoice-table tr {
+        page-break-inside: avoid;
+      }
+      .mis-kpi-grid {
+        grid-template-columns: repeat(4, 1fr) !important;
+        gap: 6px !important;
+        margin-bottom: 12px !important;
+      }
+      .kpi-card {
+        padding: 6px 10px !important;
+        border: 1px solid #e2e8f0 !important;
+      }
+      .kpi-value {
+        font-size: 15px !important;
+      }
+      .kpi-sub {
+        font-size: 8px !important;
+      }
     }
   </style>
 </head>
@@ -1444,6 +1517,31 @@
           </div>
         </div>
 
+        <!-- User Activity & Financial Breakdown Section -->
+        <div style="margin: 24px 0 20px 0;">
+          <h2 style="font-size:15px; font-weight:700; color:var(--slate-800); margin:0 0 10px 0; display:flex; align-items:center; gap:8px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+            <span>User Activity &amp; Financial Volume Breakdown</span>
+          </h2>
+          <div class="table-responsive">
+            <table class="invoice-table">
+              <thead>
+                <tr>
+                  <th style="width:28%;">Corporate User</th>
+                  <th style="width:13%; text-align:center;">Total Uploads</th>
+                  <th style="width:13%; text-align:center;">Parked (MIR7)</th>
+                  <th style="width:13%; text-align:center;">HITL Pending</th>
+                  <th style="width:13%; text-align:center;">Success Rate</th>
+                  <th style="width:20%; text-align:right;">Gross Financial Volume</th>
+                </tr>
+              </thead>
+              <tbody id="misUserBreakdownBody">
+                <tr><td colspan="6" style="text-align:center; padding:16px; color:var(--slate-400);">Loading activity breakdown...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- Search and Status Filter Bar -->
         <div class="filters-bar">
           <div class="search-input-wrap">
@@ -1474,15 +1572,15 @@
           <table class="invoice-table">
             <thead>
               <tr>
-                <th>Trace / Date</th>
-                <th>File Name</th>
-                <th>Submitter</th>
-                <th>Vendor / Ref Doc</th>
-                <th>PO Number</th>
-                <th>Gross (INR)</th>
-                <th>Status</th>
-                <th>SAP BELNR</th>
-                <th>Action</th>
+                <th style="width: 10%; min-width: 85px;">Trace / Date</th>
+                <th style="width: 17%; min-width: 120px;">File Name</th>
+                <th style="width: 16%; min-width: 120px;">Submitter</th>
+                <th style="width: 18%; min-width: 130px;">Vendor / Ref Doc</th>
+                <th style="width: 10%; min-width: 85px;">PO Number</th>
+                <th style="width: 10%; min-width: 90px; text-align: right;">Gross (INR)</th>
+                <th style="width: 8%; min-width: 75px; text-align: center;">Status</th>
+                <th style="width: 6%; min-width: 70px; text-align: center;">SAP BELNR</th>
+                <th style="width: 5%; min-width: 55px; text-align: center;">Action</th>
               </tr>
             </thead>
             <tbody id="misInvoicesTableBody">
@@ -1503,12 +1601,12 @@
           <table class="invoice-table">
             <thead>
               <tr>
-                <th>Timestamp</th>
-                <th>Event Type</th>
-                <th>User</th>
-                <th>Trace ID</th>
-                <th>Severity</th>
-                <th>Audit Message</th>
+                <th style="width: 10%; min-width: 80px;">Timestamp</th>
+                <th style="width: 17%; min-width: 120px;">Event Type</th>
+                <th style="width: 16%; min-width: 120px;">User</th>
+                <th style="width: 10%; min-width: 80px;">Trace ID</th>
+                <th style="width: 7%; min-width: 65px; text-align: center;">Severity</th>
+                <th style="width: 40%; min-width: 200px;">Audit Message</th>
               </tr>
             </thead>
             <tbody id="misAuditLogsBody">
@@ -1533,19 +1631,19 @@
               </svg>
               <span>Send Test Alert</span>
             </button>
-            <span style="font-size:12px; color:var(--slate-500);">Firestore Trigger Email (firestore-send-email) &amp; Mumbai Firestore Store</span>
+            <span style="font-size:12px; color:var(--slate-500);">Dispatched to aic1176@aurogroup.com via Power Automate Webhook</span>
           </div>
         </div>
         <div class="table-responsive" style="margin-top:12px;">
           <table class="invoice-table">
             <thead>
               <tr>
-                <th>Incident / Time</th>
-                <th>Failure Type</th>
-                <th>Document File</th>
-                <th>Submitter</th>
-                <th>Error Title &amp; Summary</th>
-                <th>Alert Delivery</th>
+                <th style="width: 12%; min-width: 90px;">Incident / Time</th>
+                <th style="width: 15%; min-width: 110px;">Failure Type</th>
+                <th style="width: 18%; min-width: 120px;">Document File</th>
+                <th style="width: 15%; min-width: 110px;">Submitter</th>
+                <th style="width: 28%; min-width: 180px;">Error Title &amp; Summary</th>
+                <th style="width: 12%; min-width: 85px; text-align: center;">Alert Delivery</th>
               </tr>
             </thead>
             <tbody id="misAlertsBody">
@@ -1619,6 +1717,15 @@
       document.getElementById("viewUpload").style.display = tabName === "upload" ? "block" : "none";
       document.getElementById("viewHITL").style.display = tabName === "hitl" ? "block" : "none";
       document.getElementById("viewMIS").style.display = tabName === "mis" ? "block" : "none";
+
+      const mainEl = document.querySelector(".app-main");
+      if (mainEl) {
+        if (tabName === "mis") {
+          mainEl.style.maxWidth = "1440px";
+        } else {
+          mainEl.style.maxWidth = "1140px";
+        }
+      }
 
       if (tabName === "hitl") loadHITLQueue();
       if (tabName === "mis") loadMISDashboard();
@@ -2857,9 +2964,34 @@
         if (sapRejEl) sapRejEl.innerText = metrics.sap_rejected || 0;
         document.getElementById("kpiValidation").innerText = metrics.validation_failed || 0;
         document.getElementById("kpiDuplicates").innerText = metrics.duplicate_detected || 0;
-        document.getElementById("kpiGrossValue").innerText = `₹ ${(metrics.total_gross_val || 0).toLocaleString('en-IN')}`;
-        document.getElementById("kpiTaxableValue").innerText = `Taxable: ₹ ${(metrics.total_taxable_val || 0).toLocaleString('en-IN')}`;
+        document.getElementById("kpiGrossValue").innerText = `₹ ${(metrics.total_gross_val || 0).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+        document.getElementById("kpiTaxableValue").innerText = `Taxable: ₹ ${(metrics.total_taxable_val || 0).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
         document.getElementById("kpiLogins").innerText = `${metrics.successful_logins || 0} / ${metrics.failed_logins || 0}`;
+
+        // Populate User Activity Breakdown
+        const uBreakdown = metrics.user_breakdown || [];
+        const uBody = document.getElementById("misUserBreakdownBody");
+        if (uBody) {
+          if (!uBreakdown.length) {
+            uBody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:16px; color:var(--slate-400);">No user activity recorded for this period.</td></tr>`;
+          } else {
+            uBody.innerHTML = uBreakdown.map(u => {
+              const uEmail = u.email || u.user || "Corporate User";
+              const uGross = (u.gross || 0).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+              const uRate = u.success_rate !== undefined ? u.success_rate : (u.total ? Math.round((u.parked / u.total) * 100) : 0);
+              return `
+                <tr>
+                  <td><code>${uEmail}</code></td>
+                  <td style="text-align:center; font-weight:600;">${u.total || 0}</td>
+                  <td style="text-align:center; color:var(--success); font-weight:700;">${u.parked || 0}</td>
+                  <td style="text-align:center; color:var(--warning); font-weight:600;">${u.hitl || 0}</td>
+                  <td style="text-align:center; font-weight:600;">${uRate}%</td>
+                  <td class="mono-val" style="text-align:right; font-weight:700;">₹ ${uGross}</td>
+                </tr>
+              `;
+            }).join("");
+          }
+        }
 
         // 2. Fetch Invoices Table
         const iRes = await fetch(`/api/mis/invoices?status=${currentMISFilter}&limit=100`, {
@@ -2911,19 +3043,19 @@
 
         html += `
           <tr>
-            <td class="mono-val" style="font-size:11px;"><strong>${inv.trace_id}</strong><br><span style="color:var(--slate-400);">${dateStr}</span></td>
-            <td><strong>${inv.filename || "doc"}</strong></td>
-            <td style="font-size:12px; color:var(--slate-600);">${inv.submitted_by || "User"}</td>
-            <td>${h.RefDocNo || "-"}<br><span style="color:var(--slate-400); font-size:11px;">${h.CompName || ""}</span></td>
-            <td class="mono-val">${h.PONumber || "-"}</td>
-            <td class="mono-val" style="font-weight:600;">${gross}</td>
-            <td>${stPill}</td>
-            <td class="mono-val" style="color:#0070f2; font-weight:700;">${inv.sap_document_number || "-"}</td>
-            <td>
+            <td class="mono-val" style="font-size:11px; white-space:nowrap;"><strong>${inv.trace_id}</strong><br><span style="color:var(--slate-400); font-size:10px;">${dateStr}</span></td>
+            <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${inv.filename || ''}"><strong>${inv.filename || "doc"}</strong></td>
+            <td style="font-size:11px; color:var(--slate-600); word-break:break-all;">${inv.submitted_by || "User"}</td>
+            <td style="font-size:11px; line-height:1.3;"><strong>${h.RefDocNo || "-"}</strong><br><span style="color:var(--slate-500); font-size:10px; display:inline-block; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${h.CompName || ''}">${h.CompName || ""}</span></td>
+            <td class="mono-val" style="font-size:11px;">${h.PONumber || "-"}</td>
+            <td class="mono-val" style="font-weight:600; text-align:right; font-size:11px;">${gross}</td>
+            <td style="text-align:center;">${stPill}</td>
+            <td class="mono-val" style="color:#0070f2; font-weight:700; font-size:11px; text-align:center;">${inv.sap_document_number || "-"}</td>
+            <td style="text-align:center;">
               ${(inv.status === "HITL_REQUIRED" || inv.status === "SAP_REJECTED") ? `
-                <button class="btn-warning" onclick="switchTab('hitl')" style="padding:4px 8px; font-size:11px;">Resolve</button>
+                <button class="btn-warning" onclick="switchTab('hitl')" style="padding:3px 7px; font-size:10px;">Resolve</button>
               ` : `
-                <button class="btn-secondary" onclick="exportJSON('${inv.trace_id}')" style="padding:4px 8px; font-size:11px;">JSON</button>
+                <button class="btn-secondary" onclick="exportJSON('${inv.trace_id}')" style="padding:3px 7px; font-size:10px;">JSON</button>
               `}
             </td>
           </tr>
@@ -2948,12 +3080,12 @@
 
         html += `
           <tr>
-            <td class="mono-val" style="font-size:11px;">${timeStr}</td>
-            <td><strong>${l.event_type}</strong></td>
-            <td style="font-size:12px;">${l.user_email || "System"}</td>
+            <td class="mono-val" style="font-size:11px; white-space:nowrap;">${timeStr}</td>
+            <td style="font-size:11px; font-weight:600;">${l.event_type}</td>
+            <td style="font-size:11px; word-break:break-all;">${l.user_email || "System"}</td>
             <td class="mono-val" style="font-size:11px;">${l.trace_id || "-"}</td>
-            <td style="color:${sevColor}; font-weight:700; font-size:11px;">${l.severity}</td>
-            <td style="font-size:12px; color:var(--slate-700);">${l.message}</td>
+            <td style="text-align:center;"><span style="color:${sevColor}; font-weight:700; font-size:10px;">${l.severity}</span></td>
+            <td style="font-size:11px; color:var(--slate-700); word-break:break-word; line-height:1.35;">${l.message}</td>
           </tr>
         `;
       });
@@ -2973,12 +3105,12 @@
         const timeStr = a.timestamp ? new Date(a.timestamp).toLocaleTimeString() : "-";
         html += `
           <tr>
-            <td class="mono-val" style="font-size:11px;"><strong>${a.incident_id || "-"}</strong><br><span style="color:var(--slate-400);">${timeStr}</span></td>
-            <td><span style="background:var(--danger-light); color:var(--danger); padding:2px 6px; border-radius:4px; font-size:11px; font-weight:700;">${a.failure_type || "FAILURE"}</span></td>
-            <td><strong>${a.filename || "doc"}</strong><br><span class="mono-val" style="font-size:10px; color:var(--slate-400);">${a.trace_id || "-"}</span></td>
-            <td style="font-size:12px;">${a.submitted_by || "System"}</td>
-            <td style="font-size:12px;"><strong>${a.error_title || "Error"}</strong><br><span style="color:var(--slate-500); font-size:11px;">${a.error_detail || ""}</span></td>
-            <td><span class="context-crumb-badge" style="font-size:10px; background:#eff6ff; color:#1d4ed8;">${a.email_status || "RECORDED"}</span></td>
+            <td class="mono-val" style="font-size:11px; white-space:nowrap;"><strong>${a.incident_id || "-"}</strong><br><span style="color:var(--slate-400); font-size:10px;">${timeStr}</span></td>
+            <td><span style="background:var(--danger-light); color:var(--danger); padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700;">${a.failure_type || "FAILURE"}</span></td>
+            <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis; font-size:11px;" title="${a.filename || ''}"><strong>${a.filename || "doc"}</strong><br><span class="mono-val" style="font-size:10px; color:var(--slate-400);">${a.trace_id || "-"}</span></td>
+            <td style="font-size:11px; word-break:break-all;">${a.submitted_by || "System"}</td>
+            <td style="font-size:11px; word-break:break-word; line-height:1.35;"><strong>${a.error_title || "Error"}</strong><br><span style="color:var(--slate-500); font-size:10px;">${a.error_detail || ""}</span></td>
+            <td style="text-align:center;"><span class="context-crumb-badge" style="font-size:10px; background:#eff6ff; color:#1d4ed8; padding:2px 6px; border-radius:3px;">${a.email_status || "RECORDED"}</span></td>
           </tr>
         `;
       });
