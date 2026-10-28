@@ -308,7 +308,41 @@ class AlertNotificationService:
     2. Secure Password Reset Links -> Corporate User & aic1176@aurogroup.com
     3. Automated Monthly Executive MIS Reports -> aic1176@aurogroup.com
     4. Account Lockout Security Alerts -> aic1176@aurogroup.com
+
+    Strictly complies with the Microsoft Power Automate Request Body JSON Schema:
+    {
+        "type": "object",
+        "properties": {
+            "incident_id": { "type": "string" },
+            "recipient": { "type": "string" },
+            "subject": { "type": "string" },
+            "html": { "type": "string" },
+            "text": { "type": "string" },
+            "failure_type": { "type": "string" },
+            "filename": { "type": "string" },
+            "trace_id": { "type": "string" },
+            "timestamp": { "type": "string" },
+            "submitted_by": { "type": "string" },
+            "error_title": { "type": "string" },
+            "error_detail": { "type": "string" }
+        }
+    }
     """
+    POWER_AUTOMATE_SCHEMA_FIELDS = [
+        "incident_id",
+        "recipient",
+        "subject",
+        "html",
+        "text",
+        "failure_type",
+        "filename",
+        "trace_id",
+        "timestamp",
+        "submitted_by",
+        "error_title",
+        "error_detail",
+    ]
+
     def __init__(self, db):
         self.db = db
         self.recipient_email = ALERT_EMAIL_RECIPIENT
@@ -317,14 +351,35 @@ class AlertNotificationService:
         self.webhook_url = os.getenv("ALERT_WEBHOOK_URL", "").strip() or DEFAULT_ALERT_WEBHOOK_URL
         self._incidents_mem: List[Dict[str, Any]] = []
 
+    def normalize_power_automate_payload(self, raw_payload: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Enforces strict compliance with Microsoft Power Automate Request Body JSON Schema.
+        Guarantees all 12 properties are present, non-null, and string-typed.
+        """
+        clean_payload: Dict[str, str] = {}
+        for field in self.POWER_AUTOMATE_SCHEMA_FIELDS:
+            val = raw_payload.get(field, "")
+            if val is None:
+                val = ""
+            elif not isinstance(val, str):
+                val = str(val)
+            clean_payload[field] = val
+        return clean_payload
+
     def dispatch_power_automate(self, payload: Dict[str, Any]) -> bool:
         """Sends payload directly to Microsoft Power Automate HTTP trigger webhook."""
         if not self.webhook_url:
             return False
+        clean_payload = self.normalize_power_automate_payload(payload)
         try:
-            res = requests.post(self.webhook_url, json=payload, timeout=10)
+            res = requests.post(
+                self.webhook_url,
+                json=clean_payload,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                timeout=10,
+            )
             if res.status_code in (200, 201, 202):
-                logger.info(f"Power Automate webhook delivered successfully ({res.status_code}) for type '{payload.get('failure_type')}'.")
+                logger.info(f"Power Automate webhook delivered successfully ({res.status_code}) for type '{clean_payload.get('failure_type')}'.")
                 return True
             else:
                 logger.warning(f"Power Automate returned status {res.status_code}: {res.text[:200]}")
@@ -490,17 +545,16 @@ class AlertNotificationService:
         payload = {
             "incident_id": f"pwd_reset_{str(uuid.uuid4())[:8]}",
             "recipient": email,
-            "admin_cc": self.recipient_email,
             "subject": subject,
             "html": html_body,
             "text": plain_text,
             "failure_type": "PASSWORD_RESET_DISPATCH",
-            "filename": "auth_recovery",
+            "filename": "auth_recovery.html",
             "trace_id": f"reset_{username}",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "submitted_by": email,
             "error_title": "Password Reset Link Dispatched",
-            "error_detail": f"Time-limited single-use reset token dispatched to {email}.",
+            "error_detail": f"Time-limited single-use reset token dispatched to {email}. Audit copy sent to {self.recipient_email}.",
         }
         return self.dispatch_power_automate(payload)
 
@@ -630,14 +684,14 @@ class AlertNotificationService:
             "recipient": self.recipient_email,
             "subject": subject,
             "html": html_body,
-            "text": f"Monthly MIS Digest for {month_str}: Total={total_inv}, Parked={parked}, Gross=INR {gross_val}",
+            "text": f"Monthly MIS Digest for {month_str}: Total={total_inv}, Parked={parked}, Gross={format_inr(gross_val)}",
             "failure_type": "MONTHLY_MIS_REPORT",
             "filename": f"monthly_mis_{month_str.replace(' ', '_')}.html",
             "trace_id": f"mis_{datetime.now(timezone.utc).strftime('%Y%m')}",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "submitted_by": self.recipient_email,
             "error_title": f"Monthly MIS Executive Digest - {month_str}",
-            "error_detail": f"Performance summary delivered: {parked} documents parked, INR {gross_val:,.2f} processed.",
+            "error_detail": f"Performance summary delivered: {parked} documents parked, {format_inr(gross_val)} processed.",
         }
         return self.dispatch_power_automate(payload)
 
