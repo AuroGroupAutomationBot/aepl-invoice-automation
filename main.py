@@ -268,6 +268,38 @@ def reset_login_attempts(identifier: str, client_ip: str):
 # ---------------------------------------------------------
 # 2. UNIFIED POWER AUTOMATE NOTIFICATION CLIENT
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# 3B. INDIAN CURRENCY FORMATTER
+# ---------------------------------------------------------
+def format_inr(val: Any) -> str:
+    """Formats numeric value into standard Indian Rupee notation (e.g. ₹ 26,02,307.00)."""
+    try:
+        f = float(val or 0.0)
+    except (ValueError, TypeError):
+        return "₹ 0.00"
+    s = f"{f:.2f}"
+    parts = s.split(".")
+    integer_part = parts[0]
+    decimal_part = parts[1]
+    is_neg = integer_part.startswith("-")
+    if is_neg:
+        integer_part = integer_part[1:]
+    if len(integer_part) > 3:
+        last3 = integer_part[-3:]
+        remaining = integer_part[:-3]
+        groups = []
+        while len(remaining) > 2:
+            groups.insert(0, remaining[-2:])
+            remaining = remaining[:-2]
+        if remaining:
+            groups.insert(0, remaining)
+        formatted_int = ",".join(groups) + "," + last3
+    else:
+        formatted_int = integer_part
+    prefix = "-₹ " if is_neg else "₹ "
+    return f"{prefix}{formatted_int}.{decimal_part}"
+
+
 class AlertNotificationService:
     """
     Unified Enterprise Email Notification Service via Microsoft Power Automate Webhook.
@@ -482,64 +514,103 @@ class AlertNotificationService:
         subject = f"[AEPL AP AUTOMATION] Monthly Executive MIS Report - {month_str}"
         total_inv = metrics.get("total_invoices", 0)
         parked = metrics.get("parked_success", 0)
-        hitl = metrics.get("hitl_pending", 0) + metrics.get("hitl_resolved", 0)
+        hitl = metrics.get("hitl_pending", 0)
+        sap_rejected = metrics.get("sap_rejected", 0)
+        action_required = hitl + sap_rejected
         duplicates = metrics.get("duplicate_detected", 0)
         gross_val = metrics.get("total_gross_val", 0.0)
         taxable_val = metrics.get("total_taxable_val", 0.0)
         success_pct = round((parked / total_inv * 100), 1) if total_inv else 0.0
 
         user_rows = "".join([
-            f"<tr><td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; font-family:monospace; font-size:12px;'><code>{u.get('email') or u.get('user') or 'Corporate User'}</code></td>"
-            f"<td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; text-align:center;'>{u.get('total', 0)}</td>"
-            f"<td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; text-align:center; color:#15803d; font-weight:700;'>{u.get('parked', 0)}</td>"
-            f"<td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; text-align:center; color:#b45309; font-weight:600;'>{u.get('hitl', 0)}</td>"
-            f"<td style='padding:8px 12px; border-bottom:1px solid #e2e8f0; text-align:right; font-family:monospace; font-weight:600;'>₹ {round(float(u.get('gross', 0.0) or 0.0), 2):,.2f}</td></tr>"
+            f"<tr>"
+            f"<td style='padding:8px 10px; border-bottom:1px solid #e2e8f0; font-family:monospace; font-size:11px;'><code>{u.get('email') or u.get('user') or 'Corporate User'}</code></td>"
+            f"<td style='padding:8px 10px; border-bottom:1px solid #e2e8f0; text-align:center; font-weight:700;'>{u.get('total', 0)}</td>"
+            f"<td style='padding:8px 10px; border-bottom:1px solid #e2e8f0; text-align:center; color:#15803d; font-weight:700;'>{u.get('parked', 0)}</td>"
+            f"<td style='padding:8px 10px; border-bottom:1px solid #e2e8f0; text-align:center; color:#b45309; font-weight:600;'>{u.get('hitl', 0)}</td>"
+            f"<td style='padding:8px 10px; border-bottom:1px solid #e2e8f0; text-align:center; color:#c2410c; font-weight:600;'>{u.get('sap_rejected', 0)}</td>"
+            f"<td style='padding:8px 10px; border-bottom:1px solid #e2e8f0; text-align:center; color:#0369a1; font-weight:600;'>{u.get('duplicates', 0)}</td>"
+            f"<td style='padding:8px 10px; border-bottom:1px solid #e2e8f0; text-align:center; font-weight:600;'>{u.get('success_rate', 0.0)}%</td>"
+            f"<td style='padding:8px 10px; border-bottom:1px solid #e2e8f0; text-align:right; font-family:monospace; font-weight:700;'>{format_inr(u.get('gross', 0.0))}</td>"
+            f"</tr>"
             for u in user_breakdown
         ])
+
+        total_row = (
+            f"<tr style='background:#f8fafc; font-weight:bold;'>"
+            f"<td style='padding:9px 10px; border-top:2px solid #cbd5e1; border-bottom:2px solid #cbd5e1; font-weight:bold;'>Total (Organization-Wide)</td>"
+            f"<td style='padding:9px 10px; border-top:2px solid #cbd5e1; border-bottom:2px solid #cbd5e1; text-align:center; font-weight:bold;'>{total_inv}</td>"
+            f"<td style='padding:9px 10px; border-top:2px solid #cbd5e1; border-bottom:2px solid #cbd5e1; text-align:center; color:#15803d; font-weight:bold;'>{parked}</td>"
+            f"<td style='padding:9px 10px; border-top:2px solid #cbd5e1; border-bottom:2px solid #cbd5e1; text-align:center; color:#b45309; font-weight:bold;'>{hitl}</td>"
+            f"<td style='padding:9px 10px; border-top:2px solid #cbd5e1; border-bottom:2px solid #cbd5e1; text-align:center; color:#c2410c; font-weight:bold;'>{sap_rejected}</td>"
+            f"<td style='padding:9px 10px; border-top:2px solid #cbd5e1; border-bottom:2px solid #cbd5e1; text-align:center; color:#0369a1; font-weight:bold;'>{duplicates}</td>"
+            f"<td style='padding:9px 10px; border-top:2px solid #cbd5e1; border-bottom:2px solid #cbd5e1; text-align:center; font-weight:bold;'>{success_pct}%</td>"
+            f"<td style='padding:9px 10px; border-top:2px solid #cbd5e1; border-bottom:2px solid #cbd5e1; text-align:right; font-family:monospace; font-weight:bold; color:#1d4ed8;'>{format_inr(gross_val)}</td>"
+            f"</tr>"
+        )
 
         html_body = f"""
         <html>
         <body style="font-family: Arial, sans-serif; color: #1e293b; background-color: #f8fafc; padding: 24px; margin: 0;">
-            <div style="max-width: 680px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+            <div style="max-width: 720px; margin: 0 auto; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
                 <div style="background-color: #0f172a; padding: 22px 28px; border-bottom: 4px solid #16a34a;">
                     <h2 style="color: #ffffff; margin: 0; font-size: 20px;">AEPL Autonomous Accounts Payable Automation</h2>
                     <p style="color: #94a3b8; margin: 4px 0 0 0; font-size: 13px;">Monthly Executive Performance Digest &bull; {month_str}</p>
                 </div>
                 <div style="padding: 24px;">
-                    <!-- Email client robust table for 3-card layout (supports Outlook/Power Automate) -->
-                    <table style="width: 100%; border-collapse: separate; border-spacing: 10px 0; margin-bottom: 20px;" cellpadding="0" cellspacing="0">
+                    <!-- Email client robust summary cards (Row 1: Parked & Gross Value) -->
+                    <table style="width: 100%; border-collapse: separate; border-spacing: 8px 0; margin-bottom: 10px;" cellpadding="0" cellspacing="0">
                         <tr>
-                            <td style="width: 33.33%; padding: 14px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; vertical-align: top;">
+                            <td style="width: 50%; padding: 14px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; vertical-align: top;">
                                 <div style="font-size: 11px; color: #166534; font-weight: bold; text-transform: uppercase;">Total Parked (MIR7)</div>
                                 <div style="font-size: 24px; font-weight: bold; color: #15803d; margin-top: 4px;">{parked} / {total_inv}</div>
-                                <div style="font-size: 11px; color: #15803d; margin-top: 2px;">{success_pct}% Automation Rate</div>
+                                <div style="font-size: 11px; color: #15803d; margin-top: 2px;">{success_pct}% End-to-End Automation Rate</div>
                             </td>
-                            <td style="width: 33.33%; padding: 14px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; vertical-align: top;">
+                            <td style="width: 50%; padding: 14px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; vertical-align: top;">
                                 <div style="font-size: 11px; color: #1e40af; font-weight: bold; text-transform: uppercase;">Gross Financial Volume</div>
-                                <div style="font-size: 24px; font-weight: bold; color: #1d4ed8; margin-top: 4px;">₹ {gross_val:,.2f}</div>
-                                <div style="font-size: 11px; color: #3b82f6; margin-top: 2px;">Taxable: ₹ {taxable_val:,.2f}</div>
+                                <div style="font-size: 22px; font-weight: bold; color: #1d4ed8; margin-top: 4px;">{format_inr(gross_val)}</div>
+                                <div style="font-size: 11px; color: #3b82f6; margin-top: 2px;">Taxable Base: {format_inr(taxable_val)}</div>
                             </td>
-                            <td style="width: 33.33%; padding: 14px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; vertical-align: top;">
-                                <div style="font-size: 11px; color: #991b1b; font-weight: bold; text-transform: uppercase;">Duplicates Prevented</div>
-                                <div style="font-size: 24px; font-weight: bold; color: #b91c1c; margin-top: 4px;">{duplicates}</div>
-                                <div style="font-size: 11px; color: #dc2626; margin-top: 2px;">HITL Interventions: {hitl}</div>
+                        </tr>
+                    </table>
+                    <!-- Row 2: Mutually Exclusive Operational Outcome Cards (Parked 3 + HITL 4 + SAP Rej 3 + Duplicates 6 = 16) -->
+                    <table style="width: 100%; border-collapse: separate; border-spacing: 8px 0; margin-bottom: 20px;" cellpadding="0" cellspacing="0">
+                        <tr>
+                            <td style="width: 33.33%; padding: 12px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; vertical-align: top;">
+                                <div style="font-size: 10px; color: #92400e; font-weight: bold; text-transform: uppercase;">Pending Review (HITL)</div>
+                                <div style="font-size: 22px; font-weight: bold; color: #b45309; margin-top: 4px;">{hitl}</div>
+                                <div style="font-size: 10px; color: #d97706; margin-top: 2px;">Awaiting Human Review</div>
+                            </td>
+                            <td style="width: 33.33%; padding: 12px; background: #fff7ed; border: 1px solid #ffedd5; border-radius: 6px; vertical-align: top;">
+                                <div style="font-size: 10px; color: #9a3412; font-weight: bold; text-transform: uppercase;">SAP Rejections</div>
+                                <div style="font-size: 22px; font-weight: bold; color: #c2410c; margin-top: 4px;">{sap_rejected}</div>
+                                <div style="font-size: 10px; color: #ea580c; margin-top: 2px;">Posting / BAPI Errors</div>
+                            </td>
+                            <td style="width: 33.33%; padding: 12px; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; vertical-align: top;">
+                                <div style="font-size: 10px; color: #991b1b; font-weight: bold; text-transform: uppercase;">Duplicates Prevented</div>
+                                <div style="font-size: 22px; font-weight: bold; color: #b91c1c; margin-top: 4px;">{duplicates}</div>
+                                <div style="font-size: 10px; color: #dc2626; margin-top: 2px;">Double-Billing Blocked</div>
                             </td>
                         </tr>
                     </table>
 
                     <h3 style="font-size: 14px; color: #0f172a; margin: 18px 0 8px 0; border-bottom: 2px solid #f1f5f9; padding-bottom: 6px;">User Activity Breakdown</h3>
-                    <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 20px;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 20px;">
                         <thead>
                             <tr style="background: #f8fafc; color: #475569; text-align: left;">
-                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0;">Corporate User</th>
-                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center;">Uploads</th>
-                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center;">Parked</th>
-                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center;">HITL</th>
-                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: right;">Gross Value</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; width: 26%;">Corporate User</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center; width: 9%;">Uploads</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center; width: 9%;">Parked</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center; width: 10%;">HITL</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center; width: 10%;">Rejected</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center; width: 11%;">Duplicates</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: center; width: 9%;">Rate</th>
+                                <th style="padding: 8px 10px; border-bottom: 2px solid #e2e8f0; text-align: right; width: 16%;">Gross Value</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {user_rows or '<tr><td colspan="5" style="padding:10px; text-align:center; color:#94a3b8;">No uploads recorded for this monthly period.</td></tr>'}
+                            {user_rows or '<tr><td colspan="8" style="padding:10px; text-align:center; color:#94a3b8;">No uploads recorded for this monthly period.</td></tr>'}
+                            {total_row if user_rows else ''}
                         </tbody>
                     </table>
 
@@ -1093,7 +1164,7 @@ class FirestoreAuditService:
 
         total_invoices = len(all_inv)
         parked_success = sum(1 for i in all_inv if i.get("status") == "PARKED_SUCCESS")
-        hitl_pending = sum(1 for i in all_inv if i.get("status") == "HITL_REQUIRED")
+        hitl_pending = sum(1 for i in all_inv if i.get("status") in ("HITL_REQUIRED", "IRRELEVANT_DOC_PENDING"))
         hitl_resolved = sum(1 for i in all_inv if i.get("status") == "HITL_RESOLVED")
         validation_failed = sum(1 for i in all_inv if i.get("status") == "VALIDATION_FAILED")
         duplicate_detected = sum(1 for i in all_inv if i.get("status") in ("DUPLICATE_DETECTED", "BATCH_DUPLICATE_DETECTED"))
@@ -1164,6 +1235,8 @@ class FirestoreAuditService:
                     "total": 0,
                     "parked": 0,
                     "hitl": 0,
+                    "sap_rejected": 0,
+                    "duplicates": 0,
                     "failed": 0,
                     "gross": 0.0,
                     "taxable": 0.0,
@@ -1175,6 +1248,10 @@ class FirestoreAuditService:
                 breakdown_map[submitter]["parked"] += 1
             elif st in ("HITL_REQUIRED", "IRRELEVANT_DOC_PENDING"):
                 breakdown_map[submitter]["hitl"] += 1
+            elif st == "SAP_REJECTED":
+                breakdown_map[submitter]["sap_rejected"] += 1
+            elif st in ("DUPLICATE_DETECTED", "BATCH_DUPLICATE_DETECTED"):
+                breakdown_map[submitter]["duplicates"] += 1
             else:
                 breakdown_map[submitter]["failed"] += 1
 

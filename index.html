@@ -1486,7 +1486,7 @@
             <div class="kpi-sub" id="kpiParkedRate">0% success rate</div>
           </div>
           <div class="kpi-card" style="border-left: 3px solid var(--warning);">
-            <div class="kpi-label">Action Required (HITL)</div>
+            <div class="kpi-label">Pending Review (HITL)</div>
             <div class="kpi-value" id="kpiHITL" style="color:var(--warning);">0</div>
             <div class="kpi-sub">Awaiting human review</div>
           </div>
@@ -1527,17 +1527,21 @@
             <table class="invoice-table">
               <thead>
                 <tr>
-                  <th style="width:28%;">Corporate User</th>
-                  <th style="width:13%; text-align:center;">Total Uploads</th>
-                  <th style="width:13%; text-align:center;">Parked (MIR7)</th>
-                  <th style="width:13%; text-align:center;">HITL Pending</th>
-                  <th style="width:13%; text-align:center;">Success Rate</th>
-                  <th style="width:20%; text-align:right;">Gross Financial Volume</th>
+                  <th style="width:24%;">Corporate User</th>
+                  <th style="width:10%; text-align:center;">Uploads</th>
+                  <th style="width:10%; text-align:center;">Parked</th>
+                  <th style="width:11%; text-align:center;">HITL Pending</th>
+                  <th style="width:11%; text-align:center;">SAP Rejected</th>
+                  <th style="width:11%; text-align:center;">Duplicates</th>
+                  <th style="width:9%; text-align:center;">Rate</th>
+                  <th style="width:14%; text-align:right;">Gross Volume</th>
                 </tr>
               </thead>
               <tbody id="misUserBreakdownBody">
-                <tr><td colspan="6" style="text-align:center; padding:16px; color:var(--slate-400);">Loading activity breakdown...</td></tr>
+                <tr><td colspan="8" style="text-align:center; padding:16px; color:var(--slate-400);">Loading activity breakdown...</td></tr>
               </tbody>
+              <tfoot id="misUserBreakdownFoot">
+              </tfoot>
             </table>
           </div>
         </div>
@@ -2957,7 +2961,7 @@
 
         document.getElementById("kpiTotal").innerText = metrics.total_invoices || 0;
         document.getElementById("kpiParked").innerText = metrics.parked_success || 0;
-        const rate = metrics.total_invoices ? Math.round((metrics.parked_success / metrics.total_invoices) * 100) : 0;
+        const rate = metrics.total_invoices ? ((metrics.parked_success / metrics.total_invoices) * 100).toFixed(1) : "0.0";
         document.getElementById("kpiParkedRate").innerText = `${rate}% success rate`;
         document.getElementById("kpiHITL").innerText = metrics.hitl_pending || 0;
         const sapRejEl = document.getElementById("kpiSapRejected");
@@ -2971,25 +2975,54 @@
         // Populate User Activity Breakdown
         const uBreakdown = metrics.user_breakdown || [];
         const uBody = document.getElementById("misUserBreakdownBody");
+        const uFoot = document.getElementById("misUserBreakdownFoot");
         if (uBody) {
           if (!uBreakdown.length) {
-            uBody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:16px; color:var(--slate-400);">No user activity recorded for this period.</td></tr>`;
+            uBody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:16px; color:var(--slate-400);">No user activity recorded for this period.</td></tr>`;
+            if (uFoot) uFoot.innerHTML = "";
           } else {
+            let totUploads = 0, totParked = 0, totHITL = 0, totRej = 0, totDup = 0, totGross = 0;
             uBody.innerHTML = uBreakdown.map(u => {
               const uEmail = u.email || u.user || "Corporate User";
-              const uGross = (u.gross || 0).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-              const uRate = u.success_rate !== undefined ? u.success_rate : (u.total ? Math.round((u.parked / u.total) * 100) : 0);
+              const uGrossNum = (u.gross || 0);
+              const uGross = uGrossNum.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+              const uRate = u.success_rate !== undefined ? u.success_rate : (u.total ? ((u.parked / u.total) * 100).toFixed(1) : "0.0");
+              totUploads += (u.total || 0);
+              totParked += (u.parked || 0);
+              totHITL += (u.hitl || 0);
+              totRej += (u.sap_rejected || 0);
+              totDup += (u.duplicates || 0);
+              totGross += uGrossNum;
               return `
                 <tr>
                   <td><code>${uEmail}</code></td>
-                  <td style="text-align:center; font-weight:600;">${u.total || 0}</td>
+                  <td style="text-align:center; font-weight:700;">${u.total || 0}</td>
                   <td style="text-align:center; color:var(--success); font-weight:700;">${u.parked || 0}</td>
                   <td style="text-align:center; color:var(--warning); font-weight:600;">${u.hitl || 0}</td>
+                  <td style="text-align:center; color:#c2410c; font-weight:600;">${u.sap_rejected || 0}</td>
+                  <td style="text-align:center; color:#0369a1; font-weight:600;">${u.duplicates || 0}</td>
                   <td style="text-align:center; font-weight:600;">${uRate}%</td>
                   <td class="mono-val" style="text-align:right; font-weight:700;">₹ ${uGross}</td>
                 </tr>
               `;
             }).join("");
+
+            if (uFoot) {
+              const totRate = totUploads ? ((totParked / totUploads) * 100).toFixed(1) : "0.0";
+              const formattedTotGross = totGross.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+              uFoot.innerHTML = `
+                <tr style="background:#f8fafc; font-weight:bold; border-top:2px solid var(--slate-300);">
+                  <td>Total (Organization-Wide)</td>
+                  <td style="text-align:center; font-weight:700;">${totUploads}</td>
+                  <td style="text-align:center; color:var(--success); font-weight:700;">${totParked}</td>
+                  <td style="text-align:center; color:var(--warning); font-weight:700;">${totHITL}</td>
+                  <td style="text-align:center; color:#c2410c; font-weight:700;">${totRej}</td>
+                  <td style="text-align:center; color:#0369a1; font-weight:700;">${totDup}</td>
+                  <td style="text-align:center; font-weight:700;">${totRate}%</td>
+                  <td class="mono-val" style="text-align:right; color:var(--primary); font-weight:700;">₹ ${formattedTotGross}</td>
+                </tr>
+              `;
+            }
           }
         }
 
