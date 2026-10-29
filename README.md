@@ -386,6 +386,64 @@ gcloud alpha monitoring policies create \
 3. In the **Automated Incident Failure Alerts** section, click **"Send Test Alert"**.
 4. The test incident will appear in the MIS audit table and a corresponding document will be written to the `mail` collection in Firestore, triggering the configured email extension.
 
+---
+
+### SAP CPI Response Architecture & Firestore Collections
+
+Every interaction with SAP CPI (`ZMM_VENDORINV_PARK_AUTOMATE`) is parsed, audited, and persisted into **Cloud Firestore (Mumbai `asia-south1`)** for financial reconciliation, compliance, and real-time dashboard visibility.
+
+#### 1. Official SAP CPI Response Schema (`Response_VendorInvoice_Park_AEPL`)
+The engine natively parses both XML and JSON responses adhering to the enterprise schema:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="root">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Response_VendorInvoice_Park_AEPL">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="Status" type="xs:string"/>
+              <xs:element name="Message" type="xs:string"/>
+              <xs:element name="DocNum" type="xs:string"/>
+              <xs:element name="Year" type="xs:string"/>
+              <xs:element name="RefDocNo" type="xs:string"/>
+              <xs:element name="PONumber" type="xs:string"/>
+              <xs:element name="SES" type="xs:string"/>
+              <xs:element name="GRN" type="xs:string"/>
+              <xs:element name="CompName" type="xs:string"/>
+              <xs:element name="CompCode" type="xs:string"/>
+              <xs:element name="BusinessPlace" type="xs:string"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+```
+
+#### 2. Cloud Firestore Collections Layout
+| Collection | Key Pattern | Purpose & Access Model |
+| :--- | :--- | :--- |
+| `invoices` | `{trace_id}` | Primary invoice state store with sanitized Base64 PDF attachment and embedded `cpi_response`. |
+| `cpi_responses` | `cpi_{trace_id}_{timestamp}` | Historical append-only audit trail capturing every CPI attempt, parsed fields, and raw payload text. |
+| `cpi_responses_by_trace` | `{trace_id}` | Fast $O(1)$ lookup for the latest SAP CPI response per invoice. |
+| `audit_logs` | `audit_{timestamp}_{uuid}` | Tamper-evident, SHA-256 hash-chained immutable audit log of all system transitions. |
+| `auth_events` | `auth_{timestamp}_{uuid}` | Access logs capturing SSO and corporate user authentications. |
+| `incident_alerts` | `inc_{timestamp}_{uuid}` | Incident records delivered dynamically via Microsoft Power Automate and Firebase Extension. |
+| `mail` | `{mailId}` | Outbound email queue monitored by the official `firestore-send-email` Firebase Extension. |
+
+#### 3. Dedicated SAP CPI Response Query API
+Retrieve the exact recorded SAP CPI response for any processed document:
+```bash
+curl -X GET "https://sap-invoice-engine-411369932113.us-central1.run.app/api/invoices/{trace_id}/cpi-response" \
+  -H "Authorization: Bearer <FIREBASE_ID_TOKEN>"
+```
+* **Tenant Isolation**: Standard corporate users can only query CPI responses for documents they uploaded. Administrator (`aic1176@aurogroup.com`) can inspect responses across all tenant submissions.
+
+---
+
 ### Secret Manager Credentials
 
 Configured in Cloud Run via `--set-secrets`:

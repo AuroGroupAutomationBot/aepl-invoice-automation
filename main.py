@@ -896,6 +896,7 @@ class FirestoreAuditService:
         self._audit_logs_mem: List[Dict[str, Any]] = []
         self._auth_events_mem: List[Dict[str, Any]] = []
         self._password_resets_mem: Dict[str, Dict[str, Any]] = {}
+        self._cpi_responses_mem: Dict[str, Dict[str, Any]] = {}
         self._last_audit_hash = "GENESIS_AEPL_FINOPS_HASH_2026"
 
     def now_iso(self) -> str:
@@ -1119,6 +1120,64 @@ class FirestoreAuditService:
             except Exception as e:
                 logger.warning(f"Firestore duplicate search error: {e}")
 
+        return None
+
+    def save_cpi_response(
+        self,
+        trace_id: str,
+        cpi_result: Dict[str, Any],
+        raw_text: Optional[str] = None,
+        source: str = "PIPELINE_DIRECT",
+        user_email: Optional[str] = None,
+        filename: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Persists SAP CPI response payload into a dedicated 'cpi_responses' collection in Cloud Firestore
+        for complete enterprise auditability, reconciliation, and reference.
+        """
+        response_id = f"cpi_{trace_id}_{int(time.time())}"
+        cpi_resp = cpi_result.get("cpi_response", {})
+        doc = {
+            "response_id": response_id,
+            "trace_id": trace_id,
+            "filename": filename or "unknown",
+            "submitted_by": user_email or "system",
+            "source": source,
+            "timestamp": self.now_iso(),
+            "status": cpi_result.get("status"),
+            "cpi_status": cpi_result.get("cpi_status") or cpi_resp.get("Status"),
+            "sap_status": cpi_result.get("sap_status") or cpi_resp.get("Status"),
+            "belnr": cpi_result.get("belnr") or cpi_resp.get("DocNum"),
+            "fiscal_year": cpi_result.get("year") or cpi_resp.get("Year") or "2026",
+            "sap_message": cpi_result.get("sap_message") or cpi_resp.get("Message"),
+            "cpi_response": cpi_resp,
+            "raw_text_preview": (raw_text[:4000] if raw_text else None),
+        }
+
+        self._cpi_responses_mem[trace_id] = doc
+
+        if self.db:
+            try:
+                # 1. Historical append-only record in 'cpi_responses'
+                self.db.collection("cpi_responses").document(response_id).set(doc)
+                # 2. Fast 1:1 lookup by trace_id in 'cpi_responses_by_trace'
+                self.db.collection("cpi_responses_by_trace").document(trace_id).set(doc)
+            except Exception as e:
+                logger.warning(f"Firestore cpi_responses write error: {e}")
+
+        return doc
+
+    def get_cpi_response(self, trace_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves the latest SAP CPI response for a given trace_id from memory or Firestore."""
+        if trace_id in self._cpi_responses_mem:
+            return self._cpi_responses_mem[trace_id]
+        if self.db:
+            try:
+                doc = self.db.collection("cpi_responses_by_trace").document(trace_id).get()
+                if doc.exists:
+                    return doc.to_dict()
+            except Exception as e:
+                logger.warning(f"Firestore cpi_responses read error: {e}")
         return None
 
     def list_invoices(
@@ -1682,10 +1741,17 @@ def parse_sap_cpi_response(raw_text: str) -> Dict[str, Any]:
     return {}
 
 
-def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dict[str, Any]:
+def submit_to_sap_cpi(
+    trace_id: str,
+    payload_dict: dict,
+    telemetry: dict,
+    user_email: Optional[str] = None,
+    filename: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Posts payload to SAP CPI using CSRF-fetch and Service-Definition headers (Notebook logic).
-    Natively parses responses matching the official XML/JSON Response_VendorInvoice_Park_AEPL schema.
+    Natively parses responses matching the official XML/JSON Response_VendorInvoice_Park_AEPL schema
+    and automatically persists every response to Cloud Firestore for reconciliation.
     """
     cpi_start = time.time()
     final_payload = {"Request_VendorInvoice_Park_AEPL": enforce_sap_abap_typing(payload_dict)}
@@ -1716,7 +1782,7 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
                 "CompCode": comp_code,
                 "BusinessPlace": biz_place,
             }
-            return {
+            res = {
                 "status": "SAP_REJECTED",
                 "belnr": None,
                 "year": "2026",
@@ -1725,6 +1791,14 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
                 "cpi_status": "E",
                 "cpi_response": mock_resp,
             }
+            audit_service.save_cpi_response(
+                trace_id=trace_id,
+                cpi_result=res,
+                raw_text=json.dumps({"Response_VendorInvoice_Park_AEPL": mock_resp}),
+                user_email=user_email,
+                filename=filename,
+            )
+            return res
 
         existing_dup = audit_service.find_duplicate_invoice(ref_doc, comp_code)
         if existing_dup and existing_dup.get("trace_id") != trace_id:
@@ -1742,7 +1816,7 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
                 "CompCode": comp_code,
                 "BusinessPlace": biz_place,
             }
-            return {
+            res = {
                 "status": "DUPLICATE_DETECTED",
                 "belnr": None,
                 "year": "2026",
@@ -1751,6 +1825,14 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
                 "cpi_status": "E",
                 "cpi_response": mock_resp,
             }
+            audit_service.save_cpi_response(
+                trace_id=trace_id,
+                cpi_result=res,
+                raw_text=json.dumps({"Response_VendorInvoice_Park_AEPL": mock_resp}),
+                user_email=user_email,
+                filename=filename,
+            )
+            return res
 
         doc_no = f"5105{random.randint(100000, 999999)}"
         mock_resp = {
@@ -1766,7 +1848,7 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
             "CompCode": comp_code,
             "BusinessPlace": biz_place,
         }
-        return {
+        res = {
             "status": "SUCCESS",
             "belnr": doc_no,
             "year": "2026",
@@ -1775,6 +1857,14 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
             "cpi_status": "S",
             "cpi_response": mock_resp,
         }
+        audit_service.save_cpi_response(
+            trace_id=trace_id,
+            cpi_result=res,
+            raw_text=json.dumps({"Response_VendorInvoice_Park_AEPL": mock_resp}),
+            user_email=user_email,
+            filename=filename,
+        )
+        return res
 
     try:
         cpi_uri = "https://" + [p for p in SAP_CPI_URI.split("https://") if p][-1]
@@ -1833,7 +1923,7 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
             is_dup_in_sap = bool(any(w in sap_message.lower() for w in ["duplicate", "already exists", "already entered", "already parked"]))
 
             if sap_status == "S":
-                return {
+                res = {
                     "status": "SUCCESS",
                     "belnr": belnr,
                     "year": fiscal_year,
@@ -1843,7 +1933,7 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
                     "cpi_response": sap_response,
                 }
             elif is_dup_in_sap:
-                return {
+                res = {
                     "status": "DUPLICATE_DETECTED",
                     "belnr": None,
                     "year": fiscal_year,
@@ -1853,7 +1943,7 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
                     "cpi_response": sap_response,
                 }
             else:
-                return {
+                res = {
                     "status": "SAP_REJECTED",
                     "belnr": None,
                     "year": fiscal_year,
@@ -1863,15 +1953,50 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
                     "cpi_response": sap_response,
                 }
 
-        return {
+            audit_service.save_cpi_response(
+                trace_id=trace_id,
+                cpi_result=res,
+                raw_text=response.text,
+                user_email=user_email,
+                filename=filename,
+            )
+            return res
+
+        err_res = {
             "status": "CPI_ERROR",
             "belnr": None,
             "sap_message": f"HTTP {response.status_code}: CPI Middleware rejected. {response.text[:300]}",
+            "cpi_status": "E",
+            "sap_status": "E",
+            "cpi_response": {"Status": "E", "Message": response.text[:300]},
         }
+        audit_service.save_cpi_response(
+            trace_id=trace_id,
+            cpi_result=err_res,
+            raw_text=response.text,
+            user_email=user_email,
+            filename=filename,
+        )
+        return err_res
 
     except Exception as exc:
         telemetry["cpi_time"] = round(time.time() - cpi_start, 3)
-        return {"status": "CPI_EXCEPTION", "belnr": None, "sap_message": f"SAP CPI Network Exception: {str(exc)}"}
+        exc_res = {
+            "status": "CPI_EXCEPTION",
+            "belnr": None,
+            "sap_message": f"SAP CPI Network Exception: {str(exc)}",
+            "cpi_status": "E",
+            "sap_status": "E",
+            "cpi_response": {"Status": "E", "Message": str(exc)},
+        }
+        audit_service.save_cpi_response(
+            trace_id=trace_id,
+            cpi_result=exc_res,
+            raw_text=str(exc),
+            user_email=user_email,
+            filename=filename,
+        )
+        return exc_res
 
 
 # ---------------------------------------------------------
@@ -2416,7 +2541,13 @@ async def process_single_invoice_document(
             }
 
     # 8. Valid Invoice: Execute SAP CPI BAPI & Inspect Response Payload for Duplicates
-    cpi_result = submit_to_sap_cpi(trace_id, payload_dict, telemetry)
+    cpi_result = submit_to_sap_cpi(
+        trace_id=trace_id,
+        payload_dict=payload_dict,
+        telemetry=telemetry,
+        user_email=user_email,
+        filename=filename,
+    )
     elapsed = round(time.time() - t0, 2)
     telemetry["total_exec_time"] = elapsed
 
@@ -3179,7 +3310,13 @@ async def resolve_hitl_invoice(
 
     # Execute SAP CPI BAPI
     telemetry = invoice.get("telemetry", {})
-    cpi_result = submit_to_sap_cpi(trace_id, extracted_data, telemetry)
+    cpi_result = submit_to_sap_cpi(
+        trace_id=trace_id,
+        payload_dict=extracted_data,
+        telemetry=telemetry,
+        user_email=user_email,
+        filename=invoice.get("filename"),
+    )
 
     if cpi_result.get("status") == "SUCCESS":
         belnr = cpi_result.get("belnr") or "5105600001"
@@ -3363,6 +3500,50 @@ async def discard_irrelevant_invoice(
         "filename": invoice.get("filename"),
         "message": "Document confirmed as irrelevant and successfully discarded.",
     })
+
+
+@app.get("/api/invoices/{trace_id}/cpi-response")
+async def get_invoice_cpi_response(
+    trace_id: str,
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """
+    Retrieves the exact SAP CPI response record stored in Cloud Firestore ('cpi_responses_by_trace' / 'invoices').
+    Enforces multi-user isolation: Standard corporate users can only view CPI responses for their own invoices.
+    Administrator (aic1176@aurogroup.com) can view CPI responses for any invoice.
+    """
+    user_email = verify_corporate_user(authorization, x_firebase_token)
+    invoice = audit_service.get_invoice(trace_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail=f"Invoice with trace ID '{trace_id}' not found.")
+
+    is_admin = is_admin_user(user_email)
+    submitted_by = (invoice.get("submitted_by") or "").strip().lower()
+    if not is_admin and submitted_by and submitted_by != user_email.lower():
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Multi-user isolation policy restricts you to viewing SAP CPI responses for your own documents."
+        )
+
+    cpi_doc = audit_service.get_cpi_response(trace_id)
+    if not cpi_doc:
+        cpi_resp = invoice.get("cpi_response")
+        if cpi_resp:
+            return JSONResponse(content={
+                "trace_id": trace_id,
+                "status": invoice.get("status"),
+                "cpi_status": invoice.get("cpi_status") or invoice.get("sap_status"),
+                "belnr": invoice.get("sap_document_number"),
+                "fiscal_year": invoice.get("fiscal_year"),
+                "sap_message": invoice.get("sap_message"),
+                "cpi_response": cpi_resp,
+                "filename": invoice.get("filename"),
+                "submitted_by": invoice.get("submitted_by"),
+                "timestamp": invoice.get("timestamp"),
+            })
+        raise HTTPException(status_code=404, detail=f"No SAP CPI response recorded for invoice '{trace_id}'.")
+    return JSONResponse(content=cpi_doc)
 
 
 # ---------------------------------------------------------
