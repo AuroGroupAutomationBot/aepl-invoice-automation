@@ -165,6 +165,10 @@ erDiagram
 * **Keyless CI/CD with Workload Identity Federation (WIF v2)**: GitHub Actions authenticates to Google Cloud via short-lived OIDC federated tokens (`wif-aepl-github-pool-v2`), completely eliminating static service account JSON keys.
 * **Universal Cross-Device SAP Fiori Horizon Portal**: Fully responsive web application compatible with desktops, tablets, and smartphones, incorporating touch targets ($\ge 44\text{px}$), iOS zoom-prevention, horizontal momentum scrolling, and zero prototype clutter.
 * **Corporate Single Sign-On Gating**: Passwordless email link authentication restricted exclusively to authorized enterprise domains (`@axisclinicals.com`, `@aurogroup.com`, `@ent.aurogroup.com`).
+* **Strict Password Reset Workflow Isolation (NIST SP 800-63B & OWASP ASVS 2.3)**:
+  * **Zero Auto-Login on Reset Links**: Accessing password reset links (`?action=reset-password&token=...`) strictly isolates the workflow—purging existing cached sessions in `localStorage` and Firebase Auth to guarantee zero unauthorized auto-login or account takeover.
+  * **Mandatory Explicit Password Entry**: Reviewers and administrators must actively key in their desired new password with live NIST SP 800-63B complexity validation (length $\ge 8$, uppercase, lowercase, digit, special character).
+  * **Cryptographic Token Consumption & Re-Authentication**: Single-use tokens expire in 15 minutes and are consumed immediately upon reset. Upon completion, the user is transitioned to the sign-in screen to authenticate with their new credentials.
 
 ---
 

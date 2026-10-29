@@ -1290,7 +1290,16 @@
           Create a secure new password for your AEPL SAP Engine account. Must comply with NIST SP 800-63B guidelines.
         </p>
 
-        <div class="auth-form-wrap">
+        <!-- Account Verification Badge -->
+        <div id="resetAccountBadge" style="display:none; background:#f0f9ff; border:1px solid #bae6fd; border-radius:6px; padding:10px 14px; margin-bottom:16px; font-size:13px; color:#0369a1; display:flex; align-items:center; gap:8px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+          <span>Resetting credentials for: <strong id="resetTargetEmail">Corporate User</strong></span>
+        </div>
+
+        <!-- Token Expired / Invalid Notice (Hidden by default) -->
+        <div id="resetExpiredNotice" style="display:none; margin-bottom:16px;"></div>
+
+        <div class="auth-form-wrap" id="resetFormWrap">
           <form onsubmit="event.preventDefault(); submitNewPassword();">
             <div style="margin-bottom:14px;">
               <label class="form-label" for="newPasswordInput">New Password</label>
@@ -1339,19 +1348,36 @@
 
             <div style="margin-bottom:18px;">
               <label class="form-label" for="confirmPasswordInput">Confirm New Password</label>
-              <input
-                type="password"
-                id="confirmPasswordInput"
-                class="corporate-input"
-                placeholder="Re-enter new password"
-                required
-                style="width:100%; box-sizing:border-box;"
-              />
+              <div style="position:relative; display:flex; align-items:center;">
+                <input
+                  type="password"
+                  id="confirmPasswordInput"
+                  class="corporate-input"
+                  placeholder="Re-enter new password"
+                  required
+                  style="width:100%; box-sizing:border-box; padding-right:42px;"
+                />
+                <button
+                  type="button"
+                  onclick="togglePasswordVisibility('confirmPasswordInput', 'eyeIconReset2')"
+                  style="position:absolute; right:10px; background:none; border:none; color:var(--slate-400); cursor:pointer; padding:4px;"
+                >
+                  <svg id="eyeIconReset2" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                </button>
+              </div>
             </div>
 
             <button type="submit" class="btn-primary" id="btnSubmitReset" style="width:100%; padding:12px;">
               <span>Update Password &amp; Sign In</span>
             </button>
+            <div style="margin-top:10px; text-align:center;">
+              <button type="button" class="btn-secondary" onclick="cancelPasswordReset()" style="width:100%; padding:10px; font-size:13px;">
+                Cancel &amp; Return to Sign In
+              </button>
+            </div>
           </form>
           <div id="resetStatusMsg" style="display:none; margin-top:14px;"></div>
         </div>
@@ -1757,6 +1783,13 @@
     window.getCurrentUserEmail = getCurrentUserEmail;
 
     function setAuthenticatedState(email, isAdmin, fullName) {
+      // Security Guardrail: Never auto-authenticate or dismiss the screen during active password reset workflow
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get("action") === "reset-password" && urlParams.get("token")) {
+        console.warn("Blocked setAuthenticatedState: Active password reset workflow takes precedence.");
+        return;
+      }
+
       const loginCard = document.getElementById("loginCard");
       const resetCard = document.getElementById("resetPasswordCard");
       const portalNav = document.getElementById("portalNav");
@@ -1961,6 +1994,15 @@
       updateRule("ruleSpecial", hasSpecial);
     };
 
+    // Cancel password reset and return to normal sign-in
+    window.cancelPasswordReset = () => {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      const resetCard = document.getElementById("resetPasswordCard");
+      const loginCard = document.getElementById("loginCard");
+      if (resetCard) resetCard.style.display = "none";
+      if (loginCard) loginCard.style.display = "block";
+    };
+
     // Submit New Password after Reset Token verification
     window.submitNewPassword = async () => {
       const pwdInput = document.getElementById("newPasswordInput");
@@ -1996,10 +2038,23 @@
         });
         const data = await res.json();
         if (res.ok && data.status === "SUCCESS") {
-          showToast("Password updated successfully! Please sign in.");
+          showToast("Password updated successfully! Please sign in with your new credentials.");
+          const targetEmail = urlParams.get("email") || (document.getElementById("resetTargetEmail")?.innerText || "");
+
           window.history.replaceState({}, document.title, window.location.pathname);
           document.getElementById("resetPasswordCard").style.display = "none";
           document.getElementById("loginCard").style.display = "block";
+
+          if (targetEmail && targetEmail !== "Corporate User") {
+            const idInput = document.getElementById("authIdentifierInput");
+            if (idInput) idInput.value = targetEmail;
+            const pwdLoginInput = document.getElementById("authPasswordInput");
+            if (pwdLoginInput) {
+              pwdLoginInput.value = "";
+              pwdLoginInput.focus();
+            }
+          }
+
           const statusEl = document.getElementById("loginStatus");
           if (statusEl) {
             statusEl.style.display = "block";
@@ -2013,7 +2068,7 @@
           showToast(data.detail || "Password reset failed.");
           if (msgEl) {
             msgEl.style.display = "block";
-            msgEl.innerHTML = `<div style="color:#b91c1c; font-size:13px;">${data.detail || "Reset failed."}</div>`;
+            msgEl.innerHTML = `<div style="color:#b91c1c; font-size:13px; font-weight:600;">${data.detail || "Reset failed."}</div>`;
           }
         }
       } catch (err) {
@@ -2026,50 +2081,98 @@
       }
     };
 
-    // Check URL on Load for Password Reset Action
-    (function checkUrlAuthAction() {
-      const urlParams = new URLSearchParams(window.location.search);
-      const action = urlParams.get("action");
-      const token = urlParams.get("token");
+    // Check URL on Load for Password Reset Action vs Normal Session Restore
+    const urlParams = new URLSearchParams(window.location.search);
+    const isPasswordResetFlow = (urlParams.get("action") === "reset-password" && !!urlParams.get("token"));
 
-      if (action === "reset-password" && token) {
-        const loginCard = document.getElementById("loginCard");
-        const resetCard = document.getElementById("resetPasswordCard");
-        if (loginCard) loginCard.style.display = "none";
-        if (resetCard) resetCard.style.display = "block";
+    if (isPasswordResetFlow) {
+      // 1. Immediately purge any active session to prevent auto-login
+      window.localStorage.removeItem("corporate_token");
+      window.localStorage.removeItem("user_email");
+      window.localStorage.removeItem("user_name");
+      window.localStorage.removeItem("is_admin");
 
-        fetch("/api/auth/verify-reset-token", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token }),
-        })
-        .then(async r => {
-          const data = await r.json();
-          if (!r.ok) {
-            showToast(data.detail || "Reset link is invalid or expired.");
-            if (resetCard) resetCard.style.display = "none";
-            if (loginCard) loginCard.style.display = "block";
-          }
-        })
-        .catch(() => {});
-      }
-    })();
-
-    // Restore persistent session on page load
-    const savedToken = window.localStorage.getItem("corporate_token");
-    const savedEmail = window.localStorage.getItem("user_email");
-    if (savedToken && savedEmail) {
-      setAuthenticatedState(savedEmail, savedEmail === "aic1176@aurogroup.com");
-    } else {
-      const userPill = document.getElementById("userPill");
-      const portalNav = document.getElementById("portalNav");
       const loginCard = document.getElementById("loginCard");
-      if (userPill) userPill.style.display = "none";
+      const resetCard = document.getElementById("resetPasswordCard");
+      const forgotCard = document.getElementById("forgotPasswordCard");
+      const portalNav = document.getElementById("portalNav");
+      const userPill = document.getElementById("userPill");
+
       if (portalNav) portalNav.style.display = "none";
-      if (loginCard) loginCard.style.display = "block";
+      if (userPill) userPill.style.display = "none";
+      if (loginCard) loginCard.style.display = "none";
+      if (forgotCard) forgotCard.style.display = "none";
+      if (resetCard) resetCard.style.display = "block";
       document.getElementById("viewUpload").style.display = "none";
       document.getElementById("viewHITL").style.display = "none";
       document.getElementById("viewMIS").style.display = "none";
+
+      const resetToken = urlParams.get("token");
+      const urlEmail = urlParams.get("email");
+
+      // Verify token with backend
+      fetch("/api/auth/verify-reset-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: resetToken }),
+      })
+      .then(async r => {
+        const data = await r.json();
+        if (r.ok && data.status === "VALID") {
+          const badge = document.getElementById("resetAccountBadge");
+          const targetEl = document.getElementById("resetTargetEmail");
+          const formWrap = document.getElementById("resetFormWrap");
+          const target = data.email || urlEmail || data.username || "Corporate User";
+          if (badge && targetEl) {
+            targetEl.innerText = target;
+            badge.style.display = "flex";
+          }
+          if (formWrap) formWrap.style.display = "block";
+        } else {
+          const formWrap = document.getElementById("resetFormWrap");
+          const errBox = document.getElementById("resetExpiredNotice");
+          const badge = document.getElementById("resetAccountBadge");
+          if (badge) badge.style.display = "none";
+          if (formWrap) formWrap.style.display = "none";
+          if (errBox) {
+            errBox.style.display = "block";
+            errBox.innerHTML = `
+              <div style="background:#fef2f2; border:1px solid #fecaca; border-radius:8px; padding:18px; color:#991b1b;">
+                <div style="font-weight:700; font-size:15px; margin-bottom:6px; display:flex; align-items:center; gap:8px;">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+                  <span>Password Reset Link Expired or Invalid</span>
+                </div>
+                <p style="font-size:13px; line-height:1.5; margin:0 0 14px 0; color:#7f1d1d;">
+                  ${data.detail || "This single-use password reset link is invalid, has expired (15-minute validity), or has already been used."}
+                </p>
+                <button type="button" class="btn-primary" onclick="cancelPasswordReset()" style="padding:10px 18px; font-size:13px;">
+                  Return to Sign In & Request New Link
+                </button>
+              </div>
+            `;
+          }
+        }
+      })
+      .catch((err) => {
+        showToast("Network error verifying password reset link.");
+      });
+    } else {
+      // Restore persistent session on page load ONLY if not in password reset workflow
+      const savedToken = window.localStorage.getItem("corporate_token");
+      const savedEmail = window.localStorage.getItem("user_email");
+      if (savedToken && savedEmail) {
+        setAuthenticatedState(savedEmail, savedEmail === "aic1176@aurogroup.com");
+      } else {
+        const userPill = document.getElementById("userPill");
+        const portalNav = document.getElementById("portalNav");
+        const loginCard = document.getElementById("loginCard");
+        if (userPill) userPill.style.display = "none";
+        if (portalNav) portalNav.style.display = "none";
+        if (loginCard) loginCard.style.display = "block";
+        document.getElementById("viewUpload").style.display = "none";
+        document.getElementById("viewHITL").style.display = "none";
+        document.getElementById("viewMIS").style.display = "none";
+      }
     }
 
     // Sign out handler
@@ -3389,6 +3492,15 @@
       }
 
       onAuthStateChanged(auth, async (user) => {
+        // Defense-in-depth: Never auto-authenticate or dismiss screen during password reset
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get("action") === "reset-password" && urlParams.get("token")) {
+          if (user) {
+            try { await signOut(auth); } catch (_) {}
+          }
+          return;
+        }
+
         if (user) {
           const email = (user.email || "").toLowerCase().trim();
           const isAllowed = ALLOWED_EMAILS.includes(email) || ALLOWED_DOMAINS.some(d => email.endsWith("@" + d) || email.endsWith("." + d));
