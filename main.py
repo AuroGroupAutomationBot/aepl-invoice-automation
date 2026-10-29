@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
+import xml.etree.ElementTree as ET
 
 import firebase_admin
 from firebase_admin import auth as firebase_auth, firestore as fb_firestore
@@ -1612,10 +1613,80 @@ def process_single_file_media(filename: str, content: bytes) -> Tuple[List[types
 
 
 # ---------------------------------------------------------
-# 9. SAP CPI BAPI DISPATCHER
+# 9. SAP CPI BAPI DISPATCHER & MULTI-FORMAT PARSER
 # ---------------------------------------------------------
+def parse_sap_cpi_response(raw_text: str) -> Dict[str, Any]:
+    """
+    Parses SAP CPI response across both XML and JSON representations according to the official
+    SAP CPI Response_VendorInvoice_Park_AEPL schema:
+    - Root: <root> or <Response_VendorInvoice_Park_AEPL>
+    - Child: <Response_VendorInvoice_Park_AEPL>
+      * Status (xs:string)
+      * Message (xs:string)
+      * DocNum (xs:string)
+      * Year (xs:string)
+      * RefDocNo (xs:string)
+      * PONumber (xs:string)
+      * SES (xs:string)
+      * GRN (xs:string)
+      * CompName (xs:string)
+      * CompCode (xs:string)
+      * BusinessPlace (xs:string)
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return {}
+
+    # 1. Attempt XML Parsing (matches official SAP CPI XML response schema)
+    if text.startswith("<") or "</" in text:
+        try:
+            root = ET.fromstring(text)
+            def local_tag(elem):
+                return elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+
+            target_node = None
+            if local_tag(root) == "Response_VendorInvoice_Park_AEPL":
+                target_node = root
+            else:
+                for child in root:
+                    if local_tag(child) == "Response_VendorInvoice_Park_AEPL":
+                        target_node = child
+                        break
+
+            target = target_node if target_node is not None else root
+            extracted: Dict[str, Any] = {}
+            for elem in target:
+                tag = local_tag(elem)
+                extracted[tag] = (elem.text or "").strip()
+
+            if extracted:
+                return extracted
+        except Exception as xml_err:
+            logger.warning(f"SAP CPI XML parse notice: {xml_err}")
+
+    # 2. Attempt JSON Parsing (dual-stack compatibility)
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            if "Response_VendorInvoice_Park_AEPL" in data and isinstance(data["Response_VendorInvoice_Park_AEPL"], dict):
+                return data["Response_VendorInvoice_Park_AEPL"]
+            if "root" in data and isinstance(data["root"], dict):
+                root_obj = data["root"]
+                if "Response_VendorInvoice_Park_AEPL" in root_obj and isinstance(root_obj["Response_VendorInvoice_Park_AEPL"], dict):
+                    return root_obj["Response_VendorInvoice_Park_AEPL"]
+                return root_obj
+            return data
+    except Exception as json_err:
+        logger.warning(f"SAP CPI JSON parse notice: {json_err}")
+
+    return {}
+
+
 def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dict[str, Any]:
-    """Posts payload to SAP CPI using CSRF-fetch and Service-Definition headers (Notebook logic)."""
+    """
+    Posts payload to SAP CPI using CSRF-fetch and Service-Definition headers (Notebook logic).
+    Natively parses responses matching the official XML/JSON Response_VendorInvoice_Park_AEPL schema.
+    """
     cpi_start = time.time()
     final_payload = {"Request_VendorInvoice_Park_AEPL": enforce_sap_abap_typing(payload_dict)}
 
@@ -1624,27 +1695,85 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
         telemetry["cpi_time"] = 1.0
         telemetry["sap_time"] = 0.5
         header = payload_dict.get("HeaderData", {})
-        ref_doc = header.get("RefDocNo")
-        comp_code = header.get("CompCode")
+        ref_doc = header.get("RefDocNo") or ""
+        comp_code = header.get("CompCode") or "1000"
+        po_number = header.get("PONumber") or ""
+        ses_number = header.get("SES") or ""
+        comp_name = header.get("CompName") or "Auro Enterprises"
+        biz_place = header.get("BusinessPlace") or "3601"
+
         if not ref_doc or str(ref_doc).strip().lower() in ("null", "none", ""):
+            mock_resp = {
+                "Status": "E",
+                "Message": "SAP Business Error: Vendor Invoice Reference (XBLNR) is mandatory for parking in SAP S/4HANA (MIR7).",
+                "DocNum": "",
+                "Year": "2026",
+                "RefDocNo": "",
+                "PONumber": po_number,
+                "SES": ses_number,
+                "GRN": "",
+                "CompName": comp_name,
+                "CompCode": comp_code,
+                "BusinessPlace": biz_place,
+            }
             return {
                 "status": "SAP_REJECTED",
                 "belnr": None,
-                "sap_message": "SAP Business Error: Vendor Invoice Reference (XBLNR) is mandatory for parking in SAP S/4HANA (MIR7).",
+                "year": "2026",
+                "sap_message": mock_resp["Message"],
+                "sap_status": "E",
+                "cpi_status": "E",
+                "cpi_response": mock_resp,
             }
+
         existing_dup = audit_service.find_duplicate_invoice(ref_doc, comp_code)
         if existing_dup and existing_dup.get("trace_id") != trace_id:
             existing_doc = existing_dup.get("sap_document_number") or "5105600001"
+            mock_resp = {
+                "Status": "E",
+                "Message": f"SAP Duplicate Error: Invoice '{ref_doc}' for Company Code '{comp_code}' already exists in SAP S/4HANA (Accounting Document #{existing_doc}).",
+                "DocNum": existing_doc,
+                "Year": "2026",
+                "RefDocNo": ref_doc,
+                "PONumber": po_number,
+                "SES": ses_number,
+                "GRN": "",
+                "CompName": comp_name,
+                "CompCode": comp_code,
+                "BusinessPlace": biz_place,
+            }
             return {
                 "status": "DUPLICATE_DETECTED",
                 "belnr": None,
-                "sap_message": f"SAP Duplicate Error: Invoice '{ref_doc}' for Company Code '{comp_code}' already exists in SAP S/4HANA (Accounting Document #{existing_doc}).",
+                "year": "2026",
+                "sap_message": mock_resp["Message"],
+                "sap_status": "E",
+                "cpi_status": "E",
+                "cpi_response": mock_resp,
             }
+
         doc_no = f"5105{random.randint(100000, 999999)}"
+        mock_resp = {
+            "Status": "S",
+            "Message": f"Document [{doc_no}] parked successfully in SAP S/4HANA (Company Code {comp_code}, Fiscal Year 2026).",
+            "DocNum": doc_no,
+            "Year": "2026",
+            "RefDocNo": ref_doc,
+            "PONumber": po_number,
+            "SES": ses_number,
+            "GRN": "",
+            "CompName": comp_name,
+            "CompCode": comp_code,
+            "BusinessPlace": biz_place,
+        }
         return {
             "status": "SUCCESS",
             "belnr": doc_no,
-            "sap_message": f"Document [{doc_no}] parked successfully in SAP S/4HANA (Company Code 1000, Fiscal Year 2026).",
+            "year": "2026",
+            "sap_message": mock_resp["Message"],
+            "sap_status": "S",
+            "cpi_status": "S",
+            "cpi_response": mock_resp,
         }
 
     try:
@@ -1672,6 +1801,7 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
         headers = {
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
+            "Accept": "application/json, application/xml, text/xml",
             "Service-Definition": "ZMM_VENDORINV_PARK_AUTOMATE",
         }
         if csrf_token:
@@ -1686,22 +1816,52 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
         telemetry["cpi_time"] = round(time.time() - cpi_start, 3)
 
         if response.status_code == 200:
-            resp_json = response.json()
-            sap_response = resp_json.get("Response_VendorInvoice_Park_AEPL", {})
+            sap_response = parse_sap_cpi_response(response.text)
             sap_status = str(sap_response.get("Status", "")).strip().upper()
-            sap_message = str(sap_response.get("Message", "Document parked successfully in SAP."))
+            sap_message = str(sap_response.get("Message") or "Document processed in SAP.")
 
-            match = re.search(r"\[(\d+)\]", sap_message)
-            belnr = match.group(1) if match else "5105600001"
+            # Extract SAP Document Number (DocNum) directly from schema; fallback to regex on Message
+            doc_num_raw = str(sap_response.get("DocNum") or "").strip()
+            if doc_num_raw and doc_num_raw.lower() not in ("null", "none", ""):
+                belnr = doc_num_raw
+            else:
+                match = re.search(r"\[?(\d{10})\]?", sap_message)
+                belnr = match.group(1) if match else "5105600001"
+
+            fiscal_year = str(sap_response.get("Year") or "2026").strip()
 
             is_dup_in_sap = bool(any(w in sap_message.lower() for w in ["duplicate", "already exists", "already entered", "already parked"]))
 
             if sap_status == "S":
-                return {"status": "SUCCESS", "belnr": belnr, "sap_message": sap_message, "sap_status": "S", "cpi_status": "S", "cpi_response": sap_response}
+                return {
+                    "status": "SUCCESS",
+                    "belnr": belnr,
+                    "year": fiscal_year,
+                    "sap_message": sap_message,
+                    "sap_status": "S",
+                    "cpi_status": "S",
+                    "cpi_response": sap_response,
+                }
             elif is_dup_in_sap:
-                return {"status": "DUPLICATE_DETECTED", "belnr": None, "sap_message": f"SAP Duplicate Error: {sap_message}", "sap_status": "E", "cpi_status": "E", "cpi_response": sap_response}
+                return {
+                    "status": "DUPLICATE_DETECTED",
+                    "belnr": None,
+                    "year": fiscal_year,
+                    "sap_message": f"SAP Duplicate Error: {sap_message}",
+                    "sap_status": "E",
+                    "cpi_status": "E",
+                    "cpi_response": sap_response,
+                }
             else:
-                return {"status": "SAP_REJECTED", "belnr": None, "sap_message": f"SAP Business Error: {sap_message}", "sap_status": "E", "cpi_status": "E", "cpi_response": sap_response}
+                return {
+                    "status": "SAP_REJECTED",
+                    "belnr": None,
+                    "year": fiscal_year,
+                    "sap_message": f"SAP Business Error: {sap_message}",
+                    "sap_status": "E",
+                    "cpi_status": "E",
+                    "cpi_response": sap_response,
+                }
 
         return {
             "status": "CPI_ERROR",
@@ -2262,6 +2422,7 @@ async def process_single_invoice_document(
 
     if cpi_result.get("status") == "SUCCESS":
         belnr = cpi_result.get("belnr") or "5105600001"
+        fiscal_year = cpi_result.get("year") or cpi_result.get("cpi_response", {}).get("Year") or "2026"
         invoice_record = {
             "trace_id": trace_id,
             "filename": filename,
@@ -2269,6 +2430,10 @@ async def process_single_invoice_document(
             "submitted_by": user_email,
             "status": "PARKED_SUCCESS",
             "sap_document_number": belnr,
+            "fiscal_year": fiscal_year,
+            "cpi_status": "S",
+            "sap_status": "S",
+            "cpi_response": cpi_result.get("cpi_response", {}),
             "sap_message": cpi_result.get("sap_message"),
             "extracted_data": payload_dict,
             "telemetry": telemetry,
@@ -2279,14 +2444,16 @@ async def process_single_invoice_document(
             user_email=user_email,
             trace_id=trace_id,
             severity="INFO",
-            message=f"Invoice '{filename}' successfully parked in SAP S/4HANA (BELNR #{belnr}).",
-            metadata={"belnr": belnr, "po": header.get("PONumber")},
+            message=f"Invoice '{filename}' successfully parked in SAP S/4HANA (BELNR #{belnr}, Year {fiscal_year}).",
+            metadata={"belnr": belnr, "year": fiscal_year, "po": header.get("PONumber")},
         )
         return {
             "status": "PARKED_SUCCESS",
             "trace_id": trace_id,
             "filename": filename,
             "sap_document_number": belnr,
+            "fiscal_year": fiscal_year,
+            "cpi_response": cpi_result.get("cpi_response", {}),
             "sap_message": cpi_result.get("sap_message"),
             "extracted_data": payload_dict,
             "telemetry": telemetry,
@@ -3016,11 +3183,16 @@ async def resolve_hitl_invoice(
 
     if cpi_result.get("status") == "SUCCESS":
         belnr = cpi_result.get("belnr") or "5105600001"
+        fiscal_year = cpi_result.get("year") or cpi_result.get("cpi_response", {}).get("Year") or "2026"
         invoice["status"] = "PARKED_SUCCESS"
         invoice["hitl_resolved"] = True
         invoice["resolved_by"] = user_email
         invoice["resolved_at"] = audit_service.now_iso()
         invoice["sap_document_number"] = belnr
+        invoice["fiscal_year"] = fiscal_year
+        invoice["cpi_status"] = "S"
+        invoice["sap_status"] = "S"
+        invoice["cpi_response"] = cpi_result.get("cpi_response", {})
         invoice["sap_message"] = cpi_result.get("sap_message")
         invoice.pop("error_info", None)
         audit_service.save_invoice(invoice)
@@ -3030,14 +3202,16 @@ async def resolve_hitl_invoice(
             user_email=user_email,
             trace_id=trace_id,
             severity="INFO",
-            message=f"Invoice '{trace_id}' successfully resolved via HITL by {user_email} and parked in SAP (BELNR #{belnr}).",
-            metadata={"belnr": belnr, "po": header.get("PONumber")},
+            message=f"Invoice '{trace_id}' successfully resolved via HITL by {user_email} and parked in SAP (BELNR #{belnr}, Year {fiscal_year}).",
+            metadata={"belnr": belnr, "year": fiscal_year, "po": header.get("PONumber")},
         )
 
         return JSONResponse(content={
             "status": "PARKED_SUCCESS",
             "trace_id": trace_id,
             "sap_document_number": belnr,
+            "fiscal_year": fiscal_year,
+            "cpi_response": cpi_result.get("cpi_response", {}),
             "sap_message": cpi_result.get("sap_message"),
             "extracted_data": extracted_data,
         })
@@ -3061,6 +3235,9 @@ async def resolve_hitl_invoice(
             )
             err_info["error_message"] += f" (Verified via SAP CPI rejection: {sap_err_msg})"
             invoice["status"] = "DUPLICATE_DETECTED"
+            invoice["cpi_status"] = "E"
+            invoice["sap_status"] = "E"
+            invoice["cpi_response"] = cpi_result.get("cpi_response", {})
             invoice["error_info"] = err_info
             invoice["sap_message"] = sap_err_msg
             audit_service.save_invoice(invoice)
@@ -3097,6 +3274,7 @@ async def resolve_hitl_invoice(
                 "status": "DUPLICATE_DETECTED",
                 "trace_id": trace_id,
                 "error_info": err_info,
+                "cpi_response": cpi_result.get("cpi_response", {}),
                 "sap_message": sap_err_msg,
                 "extracted_data": extracted_data,
                 "alert_notification": {
@@ -3108,6 +3286,9 @@ async def resolve_hitl_invoice(
         else:
             err_info = SAPErrorTaxonomy.format_error("ERR_SAP_CPI_REJECTED", detail=sap_err_msg)
             invoice["status"] = "SAP_REJECTED"
+            invoice["cpi_status"] = "E"
+            invoice["sap_status"] = "E"
+            invoice["cpi_response"] = cpi_result.get("cpi_response", {})
             invoice["error_info"] = err_info
             audit_service.save_invoice(invoice)
 

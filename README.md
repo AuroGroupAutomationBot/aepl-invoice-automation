@@ -162,6 +162,10 @@ erDiagram
   * **Strict Field Immutability (Read-Only Guardrails 🔒)**: All extracted invoice header attributes and line items are locked and strictly read-only to prevent tampering with financial figures or vendor data.
   * **Isolated PO & SES Editable Fields**: Only the Purchase Order (`PONumber`, mandatory 10-digit `^\d{10}$`) and Service Entry Sheet (`SES`, optional 10-digit `^1\d{9}$`) fields are editable.
   * **SAP Rejection Finality (Status 'E')**: When SAP CPI rejects a document (response status `'E'`), the rejection is final. The **'Validate & Resume Parking in SAP'** button is permanently disabled in the UI, accompanied by an explicit rejection advisory banner, and the backend `/api/invoices/{trace_id}/resolve-hitl` API strictly rejects resume attempts with HTTP 400.
+* **SAP CPI XML/JSON Dual-Format BAPI Parsing (`Response_VendorInvoice_Park_AEPL`)**:
+  * **Native XML Schema Compliance**: Fully compliant with the official SAP CPI response schema (`<root><Response_VendorInvoice_Park_AEPL>...</Response_VendorInvoice_Park_AEPL></root>`).
+  * **Comprehensive 11-Attribute Extraction**: Accurately extracts `Status`, `Message`, `DocNum` (Accounting Document / BELNR), `Year` (Fiscal Year), `RefDocNo`, `PONumber`, `SES`, `GRN`, `CompName`, `CompCode`, and `BusinessPlace`.
+  * **Elimination of Fragile Regex Extraction**: `belnr` is mapped directly from `<DocNum>` rather than parsing message strings, with automatic fallback for older mock payloads.
 * **Keyless CI/CD with Workload Identity Federation (WIF v2)**: GitHub Actions authenticates to Google Cloud via short-lived OIDC federated tokens (`wif-aepl-github-pool-v2`), completely eliminating static service account JSON keys.
 * **Universal Cross-Device SAP Fiori Horizon Portal**: Fully responsive web application compatible with desktops, tablets, and smartphones, incorporating touch targets ($\ge 44\text{px}$), iOS zoom-prevention, horizontal momentum scrolling, and zero prototype clutter.
 * **Stage-Aware Live Processing Beacon & Shimmer Progress**:
