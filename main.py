@@ -1697,11 +1697,11 @@ def submit_to_sap_cpi(trace_id: str, payload_dict: dict, telemetry: dict) -> Dic
             is_dup_in_sap = bool(any(w in sap_message.lower() for w in ["duplicate", "already exists", "already entered", "already parked"]))
 
             if sap_status == "S":
-                return {"status": "SUCCESS", "belnr": belnr, "sap_message": sap_message}
+                return {"status": "SUCCESS", "belnr": belnr, "sap_message": sap_message, "sap_status": "S", "cpi_status": "S", "cpi_response": sap_response}
             elif is_dup_in_sap:
-                return {"status": "DUPLICATE_DETECTED", "belnr": None, "sap_message": f"SAP Duplicate Error: {sap_message}"}
+                return {"status": "DUPLICATE_DETECTED", "belnr": None, "sap_message": f"SAP Duplicate Error: {sap_message}", "sap_status": "E", "cpi_status": "E", "cpi_response": sap_response}
             else:
-                return {"status": "SAP_REJECTED", "belnr": None, "sap_message": f"SAP Business Error: {sap_message}"}
+                return {"status": "SAP_REJECTED", "belnr": None, "sap_message": f"SAP Business Error: {sap_message}", "sap_status": "E", "cpi_status": "E", "cpi_response": sap_response}
 
         return {
             "status": "CPI_ERROR",
@@ -2372,6 +2372,9 @@ async def process_single_invoice_document(
                 "file_size": len(content),
                 "submitted_by": user_email,
                 "status": "SAP_REJECTED",
+                "cpi_status": "E",
+                "sap_status": "E",
+                "cpi_response": cpi_result.get("cpi_response", {}),
                 "error_info": err_info,
                 "sap_document_number": None,
                 "sap_message": sap_err_msg,
@@ -2402,6 +2405,9 @@ async def process_single_invoice_document(
                 "status": "SAP_REJECTED",
                 "trace_id": trace_id,
                 "filename": filename,
+                "cpi_status": "E",
+                "sap_status": "E",
+                "cpi_response": cpi_result.get("cpi_response", {}),
                 "error_info": err_info,
                 "sap_message": sap_err_msg,
                 "extracted_data": payload_dict,
@@ -2923,7 +2929,21 @@ async def resolve_hitl_invoice(
             detail="Forbidden: Multi-user isolation policy restricts you to resolving invoices uploaded by your account."
         )
 
-    if invoice.get("status") not in ("HITL_REQUIRED", "VALIDATION_FAILED", "SAP_REJECTED", "IRRELEVANT_DOC_PENDING"):
+    # 2. SAP Rejection Finality Guardrail: Rejection (Status 'E') is final and cannot be resumed
+    if invoice.get("status") == "SAP_REJECTED" or invoice.get("cpi_status") == "E" or invoice.get("sap_status") == "E":
+        audit_service.log_event(
+            event_type="SAP_REJECTION_FINAL",
+            user_email=user_email,
+            trace_id=trace_id,
+            severity="WARNING",
+            message=f"Attempted resume on invoice '{trace_id}' blocked: SAP S/4HANA rejection (Status 'E') is final.",
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot resume parking: SAP rejection is final (SAP CPI response 'E'). This document cannot be re-parked in SAP. A corrected invoice or resolution within SAP S/4HANA is required."
+        )
+
+    if invoice.get("status") not in ("HITL_REQUIRED", "VALIDATION_FAILED", "IRRELEVANT_DOC_PENDING"):
         raise HTTPException(
             status_code=400,
             detail=f"Invoice is currently in status '{invoice.get('status')}' and does not require intervention."
