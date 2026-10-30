@@ -125,10 +125,12 @@ erDiagram
         string DocDate "Invoice Date in DD.MM.YYYY format (BLDAT)"
         string PONumber "10-digit SAP Purchase Order Number (EBELN)"
         string SES "10-digit Service Entry Sheet starting with 1 (LBLNI)"
+        string GRN "10-digit Goods Receipt Note starting with 5 (MIGO)"
         string CompName "Legal entity receiving the invoice (Billed To)"
         string CompCode "SAP Company Code (e.g. 8000, 9000, 1000)"
         string BusinessPlace "SAP Business Place Code (e.g. 2701, 2702, 3701, 3601)"
         float TaxableVal "Net taxable base value before GST"
+        float TCS "Tax Collected at Source amount if applicable"
         float TotalInvVal "Final gross amount inclusive of all taxes"
         string Attachment "Base64 encoded merged PDF stream"
     }
@@ -153,14 +155,14 @@ erDiagram
 * **10 MB Enterprise Document Payload Limit**: Enforces a strict 10 MB maximum document size limit per business specification. Accommodates single and multi-page PDFs and images while protecting against payload exhaustion.
 * **The 768px FinOps Rule**: Image inputs (PNG/JPG) are automatically scaled to $768\times 768$ pixels before inference, constraining visual token consumption to exactly 258 tokens per page ($75\%$ cost reduction compared to unscaled uploads).
 * **Deterministic SAP ABAP DDIC Type Enforcement**: Automatic casting of numeric amounts to 2 decimal places, date normalization to `DD.MM.YYYY`, and string length bounding prevents downstream BAPI dumps.
-* **10-Digit SAP PO & SES Regex Guardrails**: Hard firewall validating that `PONumber` is strictly a 10-digit integer (`^\d{10}$`) and `SES` is a 10-digit number starting with 1 (`^1\d{9}$`).
+* **10-Digit SAP PO, SES & GRN Regex Guardrails**: Hard firewall validating that `PONumber` is strictly a 10-digit integer (`^\d{10}$`), `SES` is a 10-digit number starting with 1 (`^1\d{9}$`), `GRN` is a 10-digit number starting with 5 (`^5\d{9}$`), and `TCS` is non-negative ($\ge 0$).
 * **In-Memory Universal PDF & DMS Attachment Pipeline**: Multi-page scans and PDFs are merged, compressed, and converted to Base64 in RAM via PyMuPDF/Pillow and injected into `HeaderData.Attachment` for DmacQ DMS archival without disk overhead.
 * **Direct VPC Egress with Private Google Access**: Attached to VPC `vpc-aepl-inv-sec` and subnet `sub-aepl-us` (`10.20.1.0/24`) with `private-ranges-only`, keeping private SAP ERP communication isolated while communicating with Google APIs via Google's internal private backbone.
 * **Central Cloud Firestore Store (Mumbai `asia-south1`)**: Native persistence for invoice lifecycle (`invoices`), audit trail (`audit_logs`), auth events (`auth_events`), and failure incidents (`incident_alerts`) with sanitized attachment protection (< 1 MiB doc limit).
 * **Self-Service Human-in-the-Loop (HITL) with Comprehensive Value Visibility**:
-  * **Full Invoice Attribute & Line Item Parity**: The HITL interface displays all extracted values identically to the SAP parked success view—including the full 8-attribute header grid (`RefDocNo`, `DocDate`, `CompCode`, `CompName`, `Gross Value`, `Taxable Base`, `Business Place`, `Service Entry Sheet (SES)`) and the complete multi-row Line Items table (`ItemData`), removing artificial tax estimates that confuse end-users.
+  * **Full Invoice Attribute & Line Item Parity**: The HITL interface displays all extracted values identically to the SAP parked success view—including the full 10-attribute header grid (`RefDocNo`, `DocDate`, `CompCode`, `CompName`, `Gross Value`, `Taxable Base`, `TCS`, `Business Place`, `SES`, `GRN`) and the complete multi-row Line Items table (`ItemData`), removing artificial tax estimates that confuse end-users.
   * **Strict Field Immutability (Read-Only Guardrails 🔒)**: All extracted invoice header attributes and line items are locked and strictly read-only to prevent tampering with financial figures or vendor data.
-  * **Isolated PO & SES Editable Fields**: Only the Purchase Order (`PONumber`, mandatory 10-digit `^\d{10}$`) and Service Entry Sheet (`SES`, optional 10-digit `^1\d{9}$`) fields are editable.
+  * **Isolated PO, SES & GRN Editable Fields**: Only the Purchase Order (`PONumber`, mandatory 10-digit `^\d{10}$`), Service Entry Sheet (`SES`, optional 10-digit `^1\d{9}$`), and Goods Receipt Note (`GRN`, optional 10-digit `^5\d{9}$`) fields are editable in the HITL review form. All financial attributes including `TCS` remain strictly locked.
   * **SAP Rejection Finality (Status 'E')**: When SAP CPI rejects a document (response status `'E'`), the rejection is final. The **'Validate & Resume Parking in SAP'** button is permanently disabled in the UI, accompanied by an explicit rejection advisory banner, and the backend `/api/invoices/{trace_id}/resolve-hitl` API strictly rejects resume attempts with HTTP 400.
 * **SAP CPI XML/JSON Dual-Format BAPI Parsing (`Response_VendorInvoice_Park_AEPL`)**:
   * **Native XML Schema Compliance**: Fully compliant with the official SAP CPI response schema (`<root><Response_VendorInvoice_Park_AEPL>...</Response_VendorInvoice_Park_AEPL></root>`).
@@ -243,10 +245,12 @@ Expected JSON Response:
       "DocDate": "26.10.2026",
       "PONumber": "4500123456",
       "SES": "1000456789",
+      "GRN": "5000123456",
       "CompName": "Auro Enterprises Private Limited",
       "CompCode": "8000",
       "BusinessPlace": "2701",
       "TaxableVal": 125000.00,
+      "TCS": 0.00,
       "TotalInvVal": 147500.00
     },
     "ItemData": [

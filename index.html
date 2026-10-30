@@ -2727,12 +2727,20 @@
               <div class="field-card-val mono-val">₹ ${taxableVal.toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
             </div>
             <div class="field-card">
+              <div class="field-card-label">Tax Collected at Source (TCS)</div>
+              <div class="field-card-val mono-val">${header.TCS != null ? `₹ ${parseFloat(header.TCS).toLocaleString('en-IN', {minimumFractionDigits:2})}` : "-"}</div>
+            </div>
+            <div class="field-card">
               <div class="field-card-label">Business Place</div>
               <div class="field-card-val mono-val">${header.BusinessPlace || "-"}</div>
             </div>
             <div class="field-card">
               <div class="field-card-label">Service Entry Sheet (SES)</div>
               <div class="field-card-val mono-val">${header.SES || "-"}</div>
+            </div>
+            <div class="field-card">
+              <div class="field-card-label">Goods Receipt Note (GRN)</div>
+              <div class="field-card-val mono-val">${header.GRN || "-"}</div>
             </div>
           </div>
 
@@ -2893,7 +2901,7 @@
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                   <span>Extracted Invoice Header Attributes (Read-Only • 🔒 Locked)</span>
                 </div>
-                <span style="font-size:11px; background:#f1f5f9; color:#475569; padding:2px 8px; border-radius:4px; font-weight:600;">All Fields Locked except PO &amp; SES</span>
+                <span style="font-size:11px; background:#f1f5f9; color:#475569; padding:2px 8px; border-radius:4px; font-weight:600;">All Fields Locked except PO, SES &amp; GRN</span>
               </div>
               <div class="fields-dashboard-grid" style="margin:0;">
                 <div class="field-card">
@@ -2924,12 +2932,20 @@
                   <div class="field-card-val mono-val">₹ ${taxableVal.toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
                 </div>
                 <div class="field-card">
+                  <div class="field-card-label">Tax Collected at Source (TCS) 🔒</div>
+                  <div class="field-card-val mono-val">${header.TCS != null ? `₹ ${parseFloat(header.TCS).toLocaleString('en-IN', {minimumFractionDigits:2})}` : "-"}</div>
+                </div>
+                <div class="field-card">
                   <div class="field-card-label">Business Place 🔒</div>
                   <div class="field-card-val mono-val">${header.BusinessPlace || "-"}</div>
                 </div>
                 <div class="field-card">
                   <div class="field-card-label">Service Entry Sheet (SES)</div>
                   <div class="field-card-val mono-val" style="color:var(--primary);">${header.SES ? `${header.SES} 🔒` : '<span style="color:var(--slate-400);">Optional (-)</span>'}</div>
+                </div>
+                <div class="field-card">
+                  <div class="field-card-label">Goods Receipt Note (GRN)</div>
+                  <div class="field-card-val mono-val" style="color:var(--primary);">${header.GRN ? `${header.GRN} 🔒` : '<span style="color:var(--slate-400);">Optional (-)</span>'}</div>
                 </div>
               </div>
             </div>
@@ -2962,14 +2978,14 @@
               </div>
             ` : ''}
 
-            <!-- Human Correction Inline Form (Strictly PO and SES Editable) -->
+            <!-- Human Correction Inline Form (Strictly PO, SES and GRN Editable) -->
             <div style="margin-top:14px; background:#ffffff; border:1px solid ${isRejected ? '#fed7aa' : '#bfdbfe'}; border-radius:8px; padding:14px;">
               <div style="font-size:13px; font-weight:700; color:${isRejected ? '#9a3412' : '#1e40af'}; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-                <span>${isRejected ? "SAP Rejection Status Review (Re-parking Blocked)" : "Human Correction Form (Only PO &amp; SES Fields are Editable)"}</span>
+                <span>${isRejected ? "SAP Rejection Status Review (Re-parking Blocked)" : "Human Correction Form (Only PO, SES &amp; GRN Fields are Editable)"}</span>
               </div>
               <form onsubmit="event.preventDefault(); submitHITLResolution('${traceId}');">
-                <div class="hitl-form-grid" style="grid-template-columns: 1fr 1fr;">
+                <div class="hitl-form-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
                   <div class="hitl-form-group">
                     <label class="hitl-form-label">Purchase Order (10-digit PO) * (MANDATORY)</label>
                     <input
@@ -2995,6 +3011,19 @@
                       ${isRejected ? 'disabled readonly style="background:#f1f5f9; cursor:not-allowed; border-color:#cbd5e1;"' : ''}
                     />
                     <span style="font-size:11px; color:#64748b; margin-top:2px;">Optional: 10 digits starting with 1 if service invoice.</span>
+                  </div>
+                  <div class="hitl-form-group">
+                    <label class="hitl-form-label">Goods Receipt Note (GRN) (OPTIONAL)</label>
+                    <input
+                      type="text"
+                      id="hitl_grn_${traceId}"
+                      class="hitl-input"
+                      placeholder="e.g. 5000123456 (Optional)"
+                      value="${header.GRN || ''}"
+                      pattern="^(5\\d{9})?$"
+                      ${isRejected ? 'disabled readonly style="background:#f1f5f9; cursor:not-allowed; border-color:#cbd5e1;"' : ''}
+                    />
+                    <span style="font-size:11px; color:#64748b; margin-top:2px;">Optional: 10 digits starting with 5 if goods invoice.</span>
                   </div>
                 </div>
 
@@ -3104,7 +3133,7 @@
       feed.appendChild(card);
     }
 
-    // HUMAN-IN-THE-LOOP RESOLUTION SUBMISSION (Strictly PO and SES)
+    // HUMAN-IN-THE-LOOP RESOLUTION SUBMISSION (Strictly PO, SES and GRN)
     window.submitHITLResolution = async (traceId) => {
       const cachedInv = window._invoiceDataMap ? window._invoiceDataMap[traceId] : null;
       if (cachedInv && (cachedInv.status === "SAP_REJECTED" || cachedInv.cpi_status === "E" || cachedInv.sap_status === "E" || cachedInv.cpi_response?.Status === "E")) {
@@ -3119,6 +3148,7 @@
 
       const poVal = (document.getElementById(`hitl_po_${traceId}`)?.value || "").trim();
       const sesVal = (document.getElementById(`hitl_ses_${traceId}`)?.value || "").trim();
+      const grnVal = (document.getElementById(`hitl_grn_${traceId}`)?.value || "").trim();
 
       if (!poVal) {
         showToast("PO Number is mandatory. Please provide a 10-digit Purchase Order.");
@@ -3132,6 +3162,11 @@
       }
       if (sesVal && !/^1\d{9}$/.test(sesVal)) {
         showToast("Invalid SES Number: If provided, must be 10 numeric digits starting with 1.");
+        if (btn) { btn.disabled = false; btn.innerText = "Validate & Resume Parking in SAP"; }
+        return;
+      }
+      if (grnVal && !/^5\d{9}$/.test(grnVal)) {
+        showToast("Invalid GRN Number: If provided, must be 10 numeric digits starting with 5.");
         if (btn) { btn.disabled = false; btn.innerText = "Validate & Resume Parking in SAP"; }
         return;
       }
@@ -3149,6 +3184,7 @@
             corrections: {
               PONumber: poVal,
               SES: sesVal || null,
+              GRN: grnVal || null,
             }
           })
         });

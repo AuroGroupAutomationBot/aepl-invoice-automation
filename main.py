@@ -749,6 +749,22 @@ class SAPErrorTaxonomy:
             "hitl_eligible": True,
             "target_fields": ["SES"],
         },
+        "ERR_INVALID_GRN": {
+            "code": "ERR_INVALID_GRN",
+            "title": "Invalid Goods Receipt Note Format",
+            "message": "Goods Receipt Note (GRN) '{value}' must be exactly 10 digits and start with '5'.",
+            "resolution_hint": "Provide a valid 10-digit GRN starting with '5' (e.g., 5000123456), or clear field if not applicable.",
+            "hitl_eligible": True,
+            "target_fields": ["GRN"],
+        },
+        "ERR_INVALID_TCS": {
+            "code": "ERR_INVALID_TCS",
+            "title": "Invalid TCS Amount",
+            "message": "Tax Collected at Source (TCS) cannot be negative ('{value}').",
+            "resolution_hint": "Verify the statutory TCS amount on the vendor invoice.",
+            "hitl_eligible": True,
+            "target_fields": ["TCS"],
+        },
         "ERR_IRRELEVANT_DOCUMENT": {
             "code": "ERR_IRRELEVANT_DOCUMENT",
             "title": "Irrelevant / Unrecognized Company Document",
@@ -1410,10 +1426,12 @@ class ExtractionHeaderDataModel(BaseModel):
     DocDate: Optional[str] = Field(default=None, description="Invoice Date strictly converted and output as DD.MM.YYYY")
     PONumber: Optional[str] = Field(default=None, description="10-digit SAP Purchase Order Number, purely numeric")
     SES: Optional[str] = Field(default=None, description="10-digit Service Entry Sheet starting with 1 if applicable")
+    GRN: Optional[str] = Field(default=None, description="10-digit Goods Receipt Note starting with 5 if applicable")
     CompName: Optional[str] = Field(default=None, description="Legal name of the entity RECEIVING the invoice (Billed To)")
     CompCode: Optional[str] = Field(default=None, description="8000 for Auro Enterprises, 9000 for Trident Chemphar, else null")
     BusinessPlace: Optional[str] = Field(default=None, description="Business Place code based on Buyer GSTIN: 2701, 2702, 3701, 3601")
     TaxableVal: Optional[float] = Field(default=None, description="Overall total net taxable value on the invoice before GST")
+    TCS: Optional[float] = Field(default=None, description="Tax Collected at Source amount if explicitly present on the invoice")
     TotalInvVal: Optional[float] = Field(default=None, description="Final grand total invoice amount inclusive of all taxes")
 
 
@@ -1427,7 +1445,7 @@ class ExtractionInvoiceSchema(BaseModel):
 # ---------------------------------------------------------
 def enforce_sap_abap_typing(obj, parent_key=""):
     """Forces standard ABAP DDIC types to prevent BAPI dumps (Notebook logic)."""
-    numeric_fields = {"ItemQuantity", "ItemRate", "ItemAmount", "TaxableVal", "TotalInvVal"}
+    numeric_fields = {"ItemQuantity", "ItemRate", "ItemAmount", "TaxableVal", "TCS", "TotalInvVal"}
     date_fields = {"DocDate"}
 
     if isinstance(obj, list):
@@ -1437,7 +1455,7 @@ def enforce_sap_abap_typing(obj, parent_key=""):
         for k, v in obj.items():
             if k in numeric_fields and v is None:
                 cleaned[k] = 0.00
-            elif k == "SES" and (v is None or str(v).strip().lower() in ("", "null", "none")):
+            elif k in ("SES", "GRN") and (v is None or str(v).strip().lower() in ("", "null", "none")):
                 cleaned[k] = None
             else:
                 cleaned[k] = enforce_sap_abap_typing(v, k)
@@ -1468,13 +1486,17 @@ def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Option
     - PONumber: Mandatory, exactly 10 digits
     - SES: OPTIONAL (Only PO is Mandatory per specification).
            If SES is provided, it must be exactly 10 digits starting with 1.
+    - GRN: OPTIONAL. If provided, must be exactly 10 digits starting with 5.
     - TaxableVal: Must be > 0
+    - TCS: Cannot be negative (if provided)
     - TotalInvVal: Must be > 0
     """
     header = payload_dict.get("HeaderData", {})
     po_number = header.get("PONumber")
     ses_number = header.get("SES")
+    grn_number = header.get("GRN")
     taxable_val = header.get("TaxableVal")
+    tcs_val = header.get("TCS")
     total_inv_val = header.get("TotalInvVal")
 
     # 1. Missing or Invalid PO Number per notebook regex (PO is Mandatory)
@@ -1494,13 +1516,28 @@ def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Option
         # Normalize to None for clean SAP BAPI serialization
         header["SES"] = None
 
-    # 3. Value Validations per notebook
+    # 3. GRN Number is OPTIONAL. If provided, must be exactly 10 digits starting with 5.
+    if grn_number is not None and str(grn_number).strip().lower() not in ("null", "none", ""):
+        grn_str = str(grn_number).strip()
+        if not re.match(r"^5\d{9}$", grn_str):
+            return False, "ERR_INVALID_GRN", grn_str
+    else:
+        header["GRN"] = None
+
+    # 4. Value Validations per notebook
     if taxable_val is not None:
         try:
             if float(taxable_val) <= 0:
                 return False, "ERR_TAXABLE_VAL_ZERO", None
         except (ValueError, TypeError):
             return False, "ERR_TAXABLE_VAL_ZERO", None
+
+    if tcs_val is not None:
+        try:
+            if float(tcs_val) < 0:
+                return False, "ERR_INVALID_TCS", str(tcs_val)
+        except (ValueError, TypeError):
+            return False, "ERR_INVALID_TCS", str(tcs_val)
 
     if total_inv_val is not None:
         try:
@@ -1765,6 +1802,7 @@ def submit_to_sap_cpi(
         comp_code = header.get("CompCode") or "1000"
         po_number = header.get("PONumber") or ""
         ses_number = header.get("SES") or ""
+        grn_number = header.get("GRN") or ""
         comp_name = header.get("CompName") or "Auro Enterprises"
         biz_place = header.get("BusinessPlace") or "3601"
 
@@ -1777,7 +1815,7 @@ def submit_to_sap_cpi(
                 "RefDocNo": "",
                 "PONumber": po_number,
                 "SES": ses_number,
-                "GRN": "",
+                "GRN": grn_number,
                 "CompName": comp_name,
                 "CompCode": comp_code,
                 "BusinessPlace": biz_place,
@@ -1811,7 +1849,7 @@ def submit_to_sap_cpi(
                 "RefDocNo": ref_doc,
                 "PONumber": po_number,
                 "SES": ses_number,
-                "GRN": "",
+                "GRN": grn_number,
                 "CompName": comp_name,
                 "CompCode": comp_code,
                 "BusinessPlace": biz_place,
@@ -1843,7 +1881,7 @@ def submit_to_sap_cpi(
             "RefDocNo": ref_doc,
             "PONumber": po_number,
             "SES": ses_number,
-            "GRN": "",
+            "GRN": grn_number,
             "CompName": comp_name,
             "CompCode": comp_code,
             "BusinessPlace": biz_place,
@@ -2012,6 +2050,7 @@ You are an expert Accounts Payable Data Extraction Agent for SAP S/4HANA (MIR7/M
 [HEADER DATA]
 - PONumber (CRITICAL): Search for explicit labels (e.g., "PO No", "Purchase Order", handwritten "PO:"). The value MUST be exactly 10 digits and purely numeric. Ignore generic "Buyer Order" numbers.
 - SES (CRITICAL): Search for Service Entry Sheet labels ("SES", "SERVICE ENTRY SHEET"). The value MUST be exactly 10 digits, purely numeric, and begin with "1". Return `null` if not present.
+- GRN (CRITICAL): Search for Goods Receipt Note labels ("GRN", "Goods Receipt Note", "MIGO", "Material Document"). The value MUST be exactly 10 digits, purely numeric, and begin with "5". Return `null` if not present.
 - RefDocNo: Extract the Invoice Number.
 - DocDate (FORMAT RESTRICTION): Convert and output strictly as `DD.MM.YYYY`.
 - CompName (Buyer Name): Extract the legal name of the entity RECEIVING the invoice (Billed To). Do NOT extract the vendor name.
@@ -2025,6 +2064,7 @@ You are an expert Accounts Payable Data Extraction Agent for SAP S/4HANA (MIR7/M
   * '37' -> "3701"
   * '36' -> "3601"
 - TaxableVal: The overall total net taxable value on the invoice before GST is applied. Look for "Taxable Value" at the invoice summary level. This includes the basic item value plus any statutory additions (Royalty, DMF Cess, NMET, etc.) prior to tax.
+- TCS (CRITICAL): Search for Tax Collected at Source labels ("TCS", "Tax Collected at Source", "TCS Amount", "TCS @", "TCS Rate"). Extract the TCS amount/value associated with the invoice. Return the numeric value only, preserving decimal places if present. Do not confuse TCS with GST, CGST, SGST, IGST, or other tax components. Return null if TCS is not explicitly present on the invoice.
 - TotalInvVal: The final grand total invoice amount inclusive of all taxes, duties, and round-offs.
 
 [ITEM DATA]
@@ -3202,8 +3242,8 @@ async def resolve_hitl_invoice(
     Enforces MAANG-grade guardrails:
     1. Multi-User RBAC: Standard users can only resolve invoices they submitted.
        Administrator (aic1176@aurogroup.com) can resolve any invoice.
-    2. Field Locking: ONLY PONumber and SES are editable. All other fields are locked and read-only.
-    3. Mandatory Rules: Only PONumber is mandatory (10 numeric digits). SES is optional (10 digits starting with 1).
+    2. Field Locking: ONLY PONumber, SES, and GRN are editable. All other fields (including TCS) are locked and read-only.
+    3. Mandatory Rules: Only PONumber is mandatory (10 numeric digits). SES (10 digits starting with 1) and GRN (10 digits starting with 5) are optional.
     """
     user_email = verify_corporate_user(authorization, x_firebase_token)
 
@@ -3251,7 +3291,7 @@ async def resolve_hitl_invoice(
     header = extracted_data.setdefault("HeaderData", {})
     corrections = payload.get("corrections", {})
 
-    # 2. Strict Field Locking: ONLY PONumber and SES can be edited!
+    # 2. Strict Field Locking: ONLY PONumber, SES, and GRN can be edited!
     po_raw = str(corrections.get("PONumber") or header.get("PONumber") or "").strip()
     if not po_raw:
         raise HTTPException(status_code=422, detail="PO Number is mandatory. Please provide a valid 10-digit Purchase Order.")
@@ -3271,7 +3311,19 @@ async def resolve_hitl_invoice(
     elif not header.get("SES") or str(header.get("SES")).strip().lower() in ("null", "none", ""):
         header["SES"] = None
 
-    # NOTE: All other fields (RefDocNo, CompCode, DocDate, BusinessPlace, TaxableVal, TotalInvVal, ItemData)
+    # Validate GRN (Optional: if provided, must be 10 digits starting with 5)
+    if "GRN" in corrections:
+        grn_raw = str(corrections.get("GRN") or "").strip()
+        if grn_raw and grn_raw.lower() not in ("null", "none", ""):
+            if not re.match(r"^5\d{9}$", grn_raw):
+                raise HTTPException(status_code=422, detail=f"Invalid GRN Number '{grn_raw}'. Goods Receipt Note must be a 10-digit number starting with 5 (e.g. 5000123456).")
+            header["GRN"] = grn_raw
+        else:
+            header["GRN"] = None
+    elif not header.get("GRN") or str(header.get("GRN")).strip().lower() in ("null", "none", ""):
+        header["GRN"] = None
+
+    # NOTE: All other fields (RefDocNo, CompCode, DocDate, BusinessPlace, TaxableVal, TCS, TotalInvVal, ItemData)
     # remain strictly locked as originally extracted and cannot be altered.
 
     audit_service.log_event(
@@ -3279,8 +3331,8 @@ async def resolve_hitl_invoice(
         user_email=user_email,
         trace_id=trace_id,
         severity="INFO",
-        message=f"User {user_email} (Admin: {is_admin}) submitted HITL updates for invoice '{trace_id}': PO={header.get('PONumber')}, SES={header.get('SES')}.",
-        metadata={"po": header.get("PONumber"), "ses": header.get("SES")},
+        message=f"User {user_email} (Admin: {is_admin}) submitted HITL updates for invoice '{trace_id}': PO={header.get('PONumber')}, SES={header.get('SES')}, GRN={header.get('GRN')}.",
+        metadata={"po": header.get("PONumber"), "ses": header.get("SES"), "grn": header.get("GRN")},
     )
 
     # Re-validate
