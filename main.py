@@ -1246,6 +1246,8 @@ class FirestoreAuditService:
                 or s in str(inv.get("submitted_by", "")).lower()
                 or s in str(inv.get("extracted_data", {}).get("HeaderData", {}).get("RefDocNo", "")).lower()
                 or s in str(inv.get("extracted_data", {}).get("HeaderData", {}).get("PONumber", "")).lower()
+                or s in str(inv.get("extracted_data", {}).get("HeaderData", {}).get("SES", "")).lower()
+                or s in str(inv.get("extracted_data", {}).get("HeaderData", {}).get("GRN", "")).lower()
                 or s in str(inv.get("sap_document_number", "")).lower()
             ]
 
