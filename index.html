@@ -2654,7 +2654,8 @@
         const sapDocNo = data.sap_document_number || "5105600001";
         const taxableVal = parseFloat(header.TaxableVal || 0);
         const totalInvVal = parseFloat(header.TotalInvVal || 0);
-        const totalTax = totalInvVal > taxableVal ? (totalInvVal - taxableVal) : 0;
+        // Note: Generic calculated tax/variance retained internally if needed for reconciliation, but suppressed from UI display
+        const calculatedTax = totalInvVal > taxableVal ? (totalInvVal - taxableVal) : 0;
 
         let rowsHtml = "";
         items.forEach((it, idx) => {
@@ -2726,14 +2727,12 @@
               <div class="field-card-val mono-val">₹ ${taxableVal.toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
             </div>
             <div class="field-card">
-              <div class="field-card-label">Calculated GST</div>
-              <div class="field-card-val mono-val">₹ ${totalTax.toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
+              <div class="field-card-label">Business Place</div>
+              <div class="field-card-val mono-val">${header.BusinessPlace || "-"}</div>
             </div>
             <div class="field-card">
-              <div class="field-card-label">Business Place &amp; SES</div>
-              <div class="field-card-val mono-val" style="font-size:12px;">
-                Place: ${header.BusinessPlace || "2701"} ${header.SES ? `• SES: ${header.SES}` : ''}
-              </div>
+              <div class="field-card-label">Service Entry Sheet (SES)</div>
+              <div class="field-card-val mono-val">${header.SES || "-"}</div>
             </div>
           </div>
 
@@ -2845,7 +2844,8 @@
         const isRejected = (data.status === "SAP_REJECTED" || data.cpi_status === "E" || data.sap_status === "E" || data.cpi_response?.Status === "E");
         const taxableVal = parseFloat(header.TaxableVal || 0);
         const totalInvVal = parseFloat(header.TotalInvVal || 0);
-        const totalTax = totalInvVal > taxableVal ? (totalInvVal - taxableVal) : 0;
+        // Note: Generic calculated tax/variance retained internally if needed for reconciliation, but suppressed from UI display
+        const calculatedTax = totalInvVal > taxableVal ? (totalInvVal - taxableVal) : 0;
 
         let rowsHtml = "";
         items.forEach((it, idx) => {
@@ -2924,14 +2924,12 @@
                   <div class="field-card-val mono-val">₹ ${taxableVal.toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
                 </div>
                 <div class="field-card">
-                  <div class="field-card-label">Calculated GST 🔒</div>
-                  <div class="field-card-val mono-val">₹ ${totalTax.toLocaleString('en-IN', {minimumFractionDigits:2})}</div>
+                  <div class="field-card-label">Business Place 🔒</div>
+                  <div class="field-card-val mono-val">${header.BusinessPlace || "-"}</div>
                 </div>
                 <div class="field-card">
-                  <div class="field-card-label">Business Place &amp; SES 🔒</div>
-                  <div class="field-card-val mono-val" style="font-size:12px;">
-                    Place: ${header.BusinessPlace || "2701"} ${header.SES ? `• SES: ${header.SES}` : ''}
-                  </div>
+                  <div class="field-card-label">Service Entry Sheet (SES)</div>
+                  <div class="field-card-val mono-val" style="color:var(--primary);">${header.SES ? `${header.SES} 🔒` : '<span style="color:var(--slate-400);">Optional (-)</span>'}</div>
                 </div>
               </div>
             </div>
