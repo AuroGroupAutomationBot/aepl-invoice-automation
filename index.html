@@ -3619,11 +3619,24 @@
         signInWithEmailLink
       } = await import("https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js");
 
-      const firebaseConfig = {
-        apiKey: "AIzaSyDihoXXCEGIPirLVZIb4GbOtQbZ7WyLuyo",
+      // Dynamic runtime configuration: fetched from Cloud Run backend / Secret Manager to eliminate hardcoded keys
+      let firebaseConfig = {
+        apiKey: "",
         authDomain: "prj-aepl-ai-inv-auto-dev.firebaseapp.com",
         projectId: "prj-aepl-ai-inv-auto-dev"
       };
+
+      try {
+        const configResp = await fetch("/api/config/firebase");
+        if (configResp.ok) {
+          const remoteConfig = await configResp.json();
+          if (remoteConfig && remoteConfig.apiKey) {
+            firebaseConfig = remoteConfig;
+          }
+        }
+      } catch (err) {
+        console.warn("Unable to load dynamic Firebase runtime config; using local fallback:", err);
+      }
 
       const app = initializeApp(firebaseConfig);
       const auth = getAuth(app);

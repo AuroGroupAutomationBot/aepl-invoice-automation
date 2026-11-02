@@ -65,11 +65,8 @@ ALLOWED_EMAILS = {
 ALERT_EMAIL_RECIPIENT = os.getenv("ALERT_EMAIL_RECIPIENT", "aic1176@aurogroup.com").strip()
 
 # Unified Microsoft Power Automate HTTP Trigger Webhook for ALL Email Communications
-DEFAULT_ALERT_WEBHOOK_URL = (
-    "https://default75076fa3e5184305a3745215e94dee.de.environment.api.powerplatform.com:443"
-    "/powerautomate/automations/direct/cu/31/workflows/9f516bc84195412ab844e3fa188bc9f7/triggers/manual/paths/invoke"
-    "?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=1NtyL2rRdWjw1vp-yjIf5e_DiYn2oxHZPaw0ZrVc050"
-)
+# Stored securely in Google Secret Manager / Environment variable
+ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "").strip()
 
 # SAP CPI Credentials from Secret Manager
 SAP_TOKEN_URL = os.getenv("SAP_TOKEN_URL", "").strip()
@@ -349,7 +346,7 @@ class AlertNotificationService:
         self.recipient_email = ALERT_EMAIL_RECIPIENT
         self.sender_email = os.getenv("ALERT_SENDER_EMAIL", self.recipient_email).strip()
         self.mail_collection = os.getenv("MAIL_COLLECTION", "mail").strip()
-        self.webhook_url = os.getenv("ALERT_WEBHOOK_URL", "").strip() or DEFAULT_ALERT_WEBHOOK_URL
+        self.webhook_url = os.getenv("ALERT_WEBHOOK_URL", "").strip() or ALERT_WEBHOOK_URL
         self._incidents_mem: List[Dict[str, Any]] = []
 
     def normalize_power_automate_payload(self, raw_payload: Dict[str, Any]) -> Dict[str, str]:
@@ -370,6 +367,7 @@ class AlertNotificationService:
     def dispatch_power_automate(self, payload: Dict[str, Any]) -> bool:
         """Sends payload directly to Microsoft Power Automate HTTP trigger webhook."""
         if not self.webhook_url:
+            logger.info("ALERT_WEBHOOK_URL not configured. Skipping webhook dispatch and writing to Firestore mail collection.")
             return False
         clean_payload = self.normalize_power_automate_payload(payload)
         try:
@@ -2785,6 +2783,23 @@ async def healthz():
         "firestore_location": FIRESTORE_LOCATION,
         "admin_email": ALERT_EMAIL_RECIPIENT,
         "allowed_domains": list(ALLOWED_DOMAINS),
+    }
+
+
+@app.get("/api/config/firebase")
+async def get_firebase_client_config():
+    """
+    Supplies the Firebase Web SDK client configuration securely at runtime.
+    API keys and project credentials are read from Cloud Run environment / Secret Manager,
+    preventing static hardcoding in index.html and neutralizing GitHub secret scanning alerts.
+    """
+    return {
+        "apiKey": os.getenv("FIREBASE_WEB_API_KEY", "").strip(),
+        "authDomain": os.getenv("FIREBASE_AUTH_DOMAIN", f"{GCP_PROJECT}.firebaseapp.com"),
+        "projectId": GCP_PROJECT,
+        "storageBucket": os.getenv("FIREBASE_STORAGE_BUCKET", f"{GCP_PROJECT}.firebasestorage.app"),
+        "messagingSenderId": os.getenv("FIREBASE_MESSAGING_SENDER_ID", "411369932113"),
+        "appId": os.getenv("FIREBASE_APP_ID", "1:411369932113:web:531776ce35ff52b22787fc"),
     }
 
 

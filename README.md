@@ -458,6 +458,9 @@ Configured in Cloud Run via `--set-secrets`:
 | `SAP_CLIENT_ID:1` | `SAP_CLIENT_ID` | OAuth 2.0 client credential identifier. |
 | `SAP_CLIENT_SECRET:1` | `SAP_CLIENT_SECRET` | OAuth 2.0 client credential secret. |
 | `SAP_CPI_URI:1` | `SAP_CPI_URI` | Inbound SAP CPI HTTP endpoint (`ZMM_VENDORINV_PARK_AUTOMATE`). |
+| `ALERT_WEBHOOK_URL:latest` | `ALERT_WEBHOOK_URL` | Microsoft Power Automate HTTP trigger webhook URL (including secure SAS signature). |
+| `FIREBASE_WEB_API_KEY:latest` | `FIREBASE_WEB_API_KEY` | Firebase Web Client SDK API key for Single Sign-On and email-link authentication. |
+| `SESSION_SECRET:latest` | `SESSION_SECRET` | 64+ char cryptographic key used for signing corporate user session tokens (HMAC-SHA256). |
 
 ---
 
