@@ -1470,17 +1470,17 @@ GEMINI_EXTRACTION_SCHEMA = {
         "HeaderData": {
             "type": "OBJECT",
             "properties": {
-                "RefDocNo": {"type": "STRING", "nullable": True},
-                "DocDate": {"type": "STRING", "nullable": True},
-                "PONumber": {"type": "STRING", "nullable": True},
-                "SES": {"type": "STRING", "nullable": True},
-                "GRN": {"type": "STRING", "nullable": True},
-                "CompName": {"type": "STRING", "nullable": True},
-                "CompCode": {"type": "STRING", "nullable": True},
-                "BusinessPlace": {"type": "STRING", "nullable": True},
-                "TaxableVal": {"type": "NUMBER", "nullable": True},
-                "TCS": {"type": "NUMBER", "nullable": True},
-                "TotalInvVal": {"type": "NUMBER", "nullable": True},
+                "RefDocNo": {"type": "STRING", "nullable": True, "description": "Vendor invoice number (e.g. ACR/26-27/3145)."},
+                "DocDate": {"type": "STRING", "nullable": True, "description": "Document date strictly in DD.MM.YYYY format (e.g. 24.10.2026)."},
+                "PONumber": {"type": "STRING", "nullable": True, "description": "10-digit numeric Purchase Order (e.g. 6000023424 or 6000029051)."},
+                "SES": {"type": "STRING", "nullable": True, "description": "10-digit numeric Service Entry Sheet starting with 1. Null if absent."},
+                "GRN": {"type": "STRING", "nullable": True, "description": "10-digit numeric Goods Receipt Note / MIGO starting with 5. Null if absent."},
+                "CompName": {"type": "STRING", "nullable": True, "description": "Billed-to company name (e.g. Auro Enterprises)."},
+                "CompCode": {"type": "STRING", "nullable": True, "description": "Company code: '8000' for Auro Enterprises, '9000' for Trident Chemphar."},
+                "BusinessPlace": {"type": "STRING", "nullable": True, "description": "4-digit GST business place code (e.g. 2701, 2702, 3601, 3701)."},
+                "TaxableVal": {"type": "NUMBER", "nullable": True, "description": "Total net taxable base value before taxes (e.g. 181392.00)."},
+                "TCS": {"type": "NUMBER", "nullable": True, "description": "Total monetary Tax Collected at Source (TCS / 'TCS on Sales') tax amount in INR (e.g. 4280.85). Do NOT return rate/percentage (do NOT return 2 or 0.02). Return 0.00 or null if absent."},
+                "TotalInvVal": {"type": "NUMBER", "nullable": True, "description": "Final grand total invoice value inclusive of all taxes, TCS, and round off (e.g. 218323.00)."},
             },
             "required": [
                 "RefDocNo",
@@ -1498,11 +1498,12 @@ GEMINI_EXTRACTION_SCHEMA = {
         },
         "ItemData": {
             "type": "ARRAY",
+            "description": "Genuine commercial goods/services line items only. DO NOT include tax rows such as CGST, SGST, IGST, TCS on Sales, or Round Off.",
             "items": {
                 "type": "OBJECT",
                 "properties": {
                     "SlNo": {"type": "NUMBER", "nullable": True},
-                    "ItemText": {"type": "STRING", "nullable": True},
+                    "ItemText": {"type": "STRING", "nullable": True, "description": "Line item description without HSN code (e.g. COAL Coal)."},
                     "ItemQuantity": {"type": "NUMBER", "nullable": True},
                     "ItemRate": {"type": "NUMBER", "nullable": True},
                     "ItemAmount": {"type": "NUMBER", "nullable": True},
@@ -2151,27 +2152,38 @@ You are an expert Accounts Payable Data Extraction Agent for SAP S/4HANA (MIR7/M
 2. PO-BASED ONLY: Process only PO-backed invoices. Track tables across page breaks without duplicating rows.
 
 [HEADER DATA]
-- PONumber (CRITICAL): Search for explicit labels (e.g., "PO No", "Purchase Order", handwritten "PO:"). The value MUST be exactly 10 digits and purely numeric. Ignore generic "Buyer Order" numbers.
+- PONumber (CRITICAL): Search for explicit labels (e.g., "PO No", "Purchase Order", handwritten "PO:"). The value MUST be exactly 10 digits and purely numeric. If a handwritten "PO: ..." is inscribed (such as "PO: 6000023424"), prioritize it as the Purchase Order. Otherwise, extract the 10-digit Purchase Order or Buyer Order Number (e.g. 6000029051).
 - SES (CRITICAL): Search for Service Entry Sheet labels ("SES", "SERVICE ENTRY SHEET"). The value MUST be exactly 10 digits, purely numeric, and begin with "1". Return `null` if not present.
 - GRN (CRITICAL): Search for Goods Receipt Note / Material Document labels ("GRN", "GRN No", "GRN #", "GRN Number", "G.R.N.", "Goods Receipt Note", "Goods Receipt", "MIGO", "Material Document", "Material Doc", "MRN", "Material Receipt", "Store Receipt Voucher", "SRV", "Inward No", "Delivery Challan", "DC No"). The value MUST be exactly 10 digits, purely numeric, and begin with "5". If preceded by letters or symbols, extract the 10 numeric digits starting with 5. Return null if not present on the invoice.
-- RefDocNo: Extract the Invoice Number.
-- DocDate (FORMAT RESTRICTION): Convert and output strictly as `DD.MM.YYYY`.
-- CompName (Buyer Name): Extract the legal name of the entity RECEIVING the invoice (Billed To). Do NOT extract the vendor name.
+- RefDocNo: Extract the Invoice Number (e.g. ACR/26-27/3145).
+- DocDate (FORMAT RESTRICTION): Convert and output strictly as `DD.MM.YYYY` (e.g. "24-Oct-26" -> "24.10.2026").
+- CompName (Buyer Name): Extract the legal name of the entity RECEIVING the invoice (Billed To). Do NOT extract the vendor name. (e.g. "Auro Enterprises (India) Pvt Ltd").
 - CompCode:
   * "Auro Enterprises" (and variants) -> "8000"
   * "Trident Chemphar" (and variants) -> "9000"
   * Else -> `null`
 - BusinessPlace: Based on Buyer GSTIN and delivery address:
   * '27' + Mumbai -> "2702"
-  * '27' + NOT Mumbai -> "2701"
+  * '27' + NOT Mumbai (e.g., Chandrapur, Nagpur, Pune) -> "2701"
   * '37' -> "3701"
   * '36' -> "3601"
-- TaxableVal: The overall total net taxable value on the invoice before GST is applied. Look for "Taxable Value" at the invoice summary level. This includes the basic item value plus any statutory additions (Royalty, DMF Cess, NMET, etc.) prior to tax.
-- TCS (CRITICAL): Search for Tax Collected at Source labels ("TCS", "Tax Collected at Source", "TCS Amount", "TCS @", "TCS Rate", "TCS u/s 206C", "TCS 206C(1H)", "TCS Payable", "T.C.S."). Extract the TCS numeric value associated with the invoice. If printed as 0 or 0.00, or if TCS is absent, return 0.00 or null. Return numeric float value only. Do not confuse TCS with GST, CGST, SGST, IGST, or TDS.
-- TotalInvVal: The final grand total invoice amount inclusive of all taxes, duties, and round-offs.
+- TaxableVal: The overall total net taxable value on the invoice before GST and TCS is applied (e.g. 181392.00). Look for "Taxable Value" in the item or summary/HSN table.
+- TCS (CRITICAL - Tax Collected at Source in INR):
+  * MANDATORY REQUIREMENT: Extract the statutory monetary TCS tax amount in Indian Rupees (INR) as a numeric float (e.g. 4280.85).
+  * DO NOT EXTRACT RATE/PERCENTAGE: NEVER extract the percentage or rate (e.g. if the invoice prints "TCS on Sales (2%)" with rate "2%" and amount "4,280.85", you MUST extract 4280.85, NEVER 2 or 0.02).
+  * WHERE TO LOCATE TCS ON INVOICE:
+    1. Main Table Rows: In many commodity/material invoices (such as Coal, Scrap, Minerals, Metals, Timber), TCS is printed as an explicit tax line inside or right beneath the main line items table, directly below CGST and SGST (e.g. "TCS on Sales (2%)", "TCS on Sales", "TCS on Sale", "TCS on Coal", "TCS @ 2%", "TCS @ 1%", "TCS @ 0.075%", "TCS @ 0.1%"). You MUST inspect these table rows and extract the amount from the Amount column (e.g. 4,280.85).
+    2. Summary / Tax Section: Look for labels such as "TCS Amount", "Tax Collected at Source", "T.C.S.", "TCS Payable", "TCS u/s 206C", "TCS 206C(1H)", "Add: TCS", "Add: TCS on Sales".
+  * RECONCILIATION RULE: In Indian GST invoices with TCS, the Grand Total balances as:
+    TotalInvVal = Taxable Base + CGST + SGST (or IGST) + TCS ± Round Off.
+    Example: 1,81,392.00 (TaxableVal) + 16,325.28 (CGST) + 16,325.28 (SGST) + 4,280.85 (TCS on Sales) - 0.41 (Round Off) = 2,18,323.00 (TotalInvVal).
+    The line item "TCS on Sales (2%)" contributing 4,280.85 to the total MUST be extracted into HeaderData.TCS as 4280.85.
+  * If no TCS row or label is present on the invoice, return null or 0.00.
+- TotalInvVal: The final grand total invoice amount inclusive of all taxes, duties, TCS, and round-offs (e.g., 218323.00).
 
 [ITEM DATA]
-- Array Extraction: Extract goods/services line items. Ignore separate summary, subtotal, and tax (CGST/SGST/IGST/TCS) rows.
+- Array Extraction: Extract only genuine commercial line items (goods, services, materials, freight) into the ItemData array (e.g., SlNo: 1, ItemText: "COAL Coal", ItemQuantity: 37.790, ItemRate: 4800.00, ItemAmount: 181392.00).
+- EXCLUSION OF TAX ROWS FROM ITEMDATA: DO NOT include separate tax rows (such as CGST, SGST, IGST, "TCS on Sales (2%)", "TCS", Round Off) as line items inside the ItemData array. Instead, their amounts MUST be extracted into their respective HeaderData fields (TaxableVal, TCS, TotalInvVal).
 - SlNo: Sequential row number.
 - ItemText: Full description exactly as printed. DO NOT append HSN/SAC codes.
 - ItemQuantity: Numeric quantity.
@@ -2301,7 +2313,13 @@ async def process_single_invoice_document(
     telemetry["pdf_size_mb"] = round(len(base64_attachment) * 0.75 / (1024 * 1024), 3)
 
     prompt_parts.append(
-        types.Part.from_text(text="Extract all data spanning across this invoice into a single structured JSON.")
+        types.Part.from_text(
+            text=(
+                "Extract all data spanning across this invoice into a single structured JSON according to the schema. "
+                "Pay special attention to all header fields including Purchase Order (PO Number), Goods Receipt Note (GRN), "
+                "and statutory Tax Collected at Source (TCS / 'TCS on Sales' amount in INR if present in the table rows or summary)."
+            )
+        )
     )
 
     # 2. Gemini 3.8 Flash Extraction with Quota-Aware Resilient Retry
@@ -2432,6 +2450,72 @@ async def process_single_invoice_document(
         if "HeaderData" in payload_dict:
             header = payload_dict["HeaderData"]
             header["Attachment"] = base64_attachment
+
+            # -------------------------------------------------------------
+            # Intelligent TCS Post-Processing & Auto-Reconciliation
+            # -------------------------------------------------------------
+            # 1. Recover TCS if misclassified as a line item in ItemData
+            clean_items = []
+            for item in payload_dict.get("ItemData", []):
+                txt = str(item.get("ItemText") or "").strip().lower()
+                amt = float(item.get("ItemAmount") or 0.0)
+                is_tcs_row = bool(
+                    "tcs on sales" in txt
+                    or "tcs on sale" in txt
+                    or "tax collected at source" in txt
+                    or re.search(r"\btcs\b", txt)
+                )
+                if is_tcs_row and amt > 0:
+                    if not header.get("TCS") or float(header.get("TCS") or 0.0) == 0.0:
+                        header["TCS"] = round(amt, 2)
+                        logger.info(f"Auto-recovered TCS ({header['TCS']}) from misclassified ItemData row ('{item.get('ItemText')}').")
+                    continue
+                clean_items.append(item)
+            payload_dict["ItemData"] = clean_items
+
+            # 2. Check if TCS was mistakenly extracted as rate (e.g. 2.0 or 0.02) instead of monetary amount
+            current_tcs = float(header.get("TCS") or 0.0)
+            taxable_base = float(header.get("TaxableVal") or 0.0)
+            total_gross = float(header.get("TotalInvVal") or 0.0)
+
+            if 0.0 < current_tcs <= 5.0 and total_gross > taxable_base > 0:
+                rate_pct = current_tcs if current_tcs >= 0.05 else (current_tcs * 100)
+                candidate_amt = round((total_gross / (1.0 + (rate_pct / 100.0))) * (rate_pct / 100.0), 2)
+                if abs(candidate_amt - (total_gross - (total_gross - candidate_amt))) < 2.0:
+                    header["TCS"] = candidate_amt
+                    logger.info(f"Corrected TCS from rate ({current_tcs}) to calculated monetary amount ({header['TCS']}).")
+
+            # 3. Document text stream / Regex scan fallback if TCS is still missing or 0
+            if not header.get("TCS") or float(header.get("TCS") or 0.0) == 0.0:
+                search_texts = []
+                if clean_text:
+                    search_texts.append(clean_text)
+                if content.startswith(b"%PDF") or filename.lower().endswith(".pdf"):
+                    try:
+                        doc = fitz.open(stream=content, filetype="pdf")
+                        pdf_text = "\n".join([page.get_text() for page in doc])
+                        doc.close()
+                        if pdf_text:
+                            search_texts.append(pdf_text)
+                    except Exception:
+                        pass
+
+                for stext in search_texts:
+                    tcs_match = re.search(
+                        r"(?:TCS\s+on\s+Sales?|Tax\s+Collected\s+at\s+Source|T\.?C\.?S\.?)[^\d\n\r]*?(?:\(?\s*\d+(?:\.\d+)?\s*%\s*\)?)?[^\d\n\r]*?(?:\d+(?:\.\d+)?\s*%\s*)?(\d{1,3}(?:,\d{2,3})*\.\d{2})",
+                        stext,
+                        re.IGNORECASE,
+                    )
+                    if tcs_match:
+                        try:
+                            extracted_amt = float(tcs_match.group(1).replace(",", ""))
+                            if extracted_amt > 0 and extracted_amt != taxable_base and extracted_amt != total_gross:
+                                header["TCS"] = round(extracted_amt, 2)
+                                logger.info(f"Extracted TCS ({header['TCS']}) via regex fallback.")
+                                break
+                        except Exception:
+                            pass
+
             # Guarantee all SAP standard header attributes are always initialized
             for f in ["DocDate", "RefDocNo", "PONumber", "SES", "GRN", "CompName", "CompCode", "BusinessPlace"]:
                 if f not in header:
@@ -2439,6 +2523,11 @@ async def process_single_invoice_document(
             for nf in ["TaxableVal", "TCS", "TotalInvVal"]:
                 if nf not in header or header[nf] is None:
                     header[nf] = 0.00
+                else:
+                    try:
+                        header[nf] = round(float(header[nf]), 2)
+                    except Exception:
+                        header[nf] = 0.00
     except Exception as parse_e:
         alert_service.send_failure_alert(
             failure_type="JSON_PARSING_FAILED",
