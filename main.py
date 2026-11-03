@@ -400,6 +400,26 @@ class AlertNotificationService:
         now_iso = datetime.now(timezone.utc).isoformat()
         incident_id = f"inc_{str(uuid.uuid4())[:8]}"
         subject = f"[SAP AP FAILURE ALERT] {error_title} - {filename} ({trace_id})"
+        meta_html = ""
+        meta_plain = ""
+        if metadata and isinstance(metadata, dict):
+            field_labels = {
+                "RefDocNo": "Invoice Reference (XBLNR)",
+                "PONumber": "Purchase Order (PO)",
+                "SES": "Service Entry Sheet (SES)",
+                "GRN": "Goods Receipt Note (GRN)",
+                "TCS": "Tax Collected at Source (TCS)",
+                "TotalGross": "Total Gross Value (INR)",
+                "comp_code": "Company Code",
+                "comp_name": "Company Name",
+            }
+            for mk, mv in metadata.items():
+                if mv is not None and str(mv).strip() not in ("", "null", "None"):
+                    lbl = field_labels.get(mk, mk)
+                    val_str = f"₹ {float(mv):,.2f}" if (mk in ("TCS", "TotalGross") and isinstance(mv, (int, float))) else str(mv)
+                    meta_html += f"<tr><td style='padding: 6px 0; font-weight: bold;'>{lbl}:</td><td style='font-family: monospace;'>{val_str}</td></tr>"
+                    meta_plain += f"{lbl}: {val_str}\n"
+
         plain_text = (
             f"SAP S/4HANA Invoice Automation — Failure Incident Alert\n"
             f"Incident ID: {incident_id}\n"
@@ -408,6 +428,7 @@ class AlertNotificationService:
             f"Trace ID: {trace_id}\n"
             f"Submitted By: {user_email}\n"
             f"Timestamp (UTC): {now_iso}\n"
+            f"{meta_plain}"
             f"Error: {error_title} - {error_detail}\n"
             f"Action Required: Inspect Admin MIS Dashboard as {self.recipient_email}."
         )
@@ -427,6 +448,7 @@ class AlertNotificationService:
                     <tr><td style="padding: 6px 0; font-weight: bold;">Trace ID:</td><td><code>{trace_id}</code></td></tr>
                     <tr><td style="padding: 6px 0; font-weight: bold;">Submitted By:</td><td>{user_email}</td></tr>
                     <tr><td style="padding: 6px 0; font-weight: bold;">Timestamp (UTC):</td><td>{now_iso}</td></tr>
+                    {meta_html}
                     <tr><td style="padding: 6px 0; font-weight: bold; vertical-align: top;">Error Summary:</td><td><strong>{error_title}</strong><br><span style="color: #64748b;">{error_detail}</span></td></tr>
                 </table>
                 <div style="margin-top: 20px; padding: 12px; background-color: #fee2e2; border-left: 4px solid #b91c1c; font-size: 13px;">
@@ -1440,6 +1462,59 @@ class ExtractionInvoiceSchema(BaseModel):
     ItemData: List[ItemDataModel]
 
 
+# OpenAPI 3.0 Constrained Decoding Schema for Gemini
+# Enforces that all 11 core HeaderData fields (including GRN and TCS) are strictly generated in output JSON
+GEMINI_EXTRACTION_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "HeaderData": {
+            "type": "OBJECT",
+            "properties": {
+                "RefDocNo": {"type": "STRING", "nullable": True},
+                "DocDate": {"type": "STRING", "nullable": True},
+                "PONumber": {"type": "STRING", "nullable": True},
+                "SES": {"type": "STRING", "nullable": True},
+                "GRN": {"type": "STRING", "nullable": True},
+                "CompName": {"type": "STRING", "nullable": True},
+                "CompCode": {"type": "STRING", "nullable": True},
+                "BusinessPlace": {"type": "STRING", "nullable": True},
+                "TaxableVal": {"type": "NUMBER", "nullable": True},
+                "TCS": {"type": "NUMBER", "nullable": True},
+                "TotalInvVal": {"type": "NUMBER", "nullable": True},
+            },
+            "required": [
+                "RefDocNo",
+                "DocDate",
+                "PONumber",
+                "SES",
+                "GRN",
+                "CompName",
+                "CompCode",
+                "BusinessPlace",
+                "TaxableVal",
+                "TCS",
+                "TotalInvVal",
+            ],
+        },
+        "ItemData": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "SlNo": {"type": "NUMBER", "nullable": True},
+                    "ItemText": {"type": "STRING", "nullable": True},
+                    "ItemQuantity": {"type": "NUMBER", "nullable": True},
+                    "ItemRate": {"type": "NUMBER", "nullable": True},
+                    "ItemAmount": {"type": "NUMBER", "nullable": True},
+                },
+                "required": ["SlNo", "ItemText", "ItemQuantity", "ItemRate", "ItemAmount"],
+            },
+        },
+    },
+    "required": ["HeaderData", "ItemData"],
+}
+
+
 # ---------------------------------------------------------
 # 6. SAP ABAP DDIC TYPING & GUARDRAILS (From Notebook)
 # ---------------------------------------------------------
@@ -1459,6 +1534,22 @@ def enforce_sap_abap_typing(obj, parent_key=""):
                 cleaned[k] = None
             else:
                 cleaned[k] = enforce_sap_abap_typing(v, k)
+
+        # Enforce all mandatory SAP CPI HeaderData fields are explicitly present so they are always transmitted
+        if parent_key == "HeaderData" or ("RefDocNo" in cleaned or "PONumber" in cleaned):
+            all_header_fields = [
+                "DocDate", "RefDocNo", "PONumber", "SES", "GRN",
+                "CompName", "CompCode", "BusinessPlace",
+                "TaxableVal", "TCS", "TotalInvVal", "Attachment"
+            ]
+            for field in all_header_fields:
+                if field not in cleaned:
+                    if field in ("SES", "GRN"):
+                        cleaned[field] = None
+                    elif field in numeric_fields:
+                        cleaned[field] = 0.00
+                    else:
+                        cleaned[field] = ""
         return cleaned
     elif isinstance(obj, (int, float)) or (parent_key in numeric_fields):
         try:
@@ -1803,6 +1894,9 @@ def submit_to_sap_cpi(
         po_number = header.get("PONumber") or ""
         ses_number = header.get("SES") or ""
         grn_number = header.get("GRN") or ""
+        tcs_val = header.get("TCS")
+        taxable_val = header.get("TaxableVal")
+        total_inv_val = header.get("TotalInvVal")
         comp_name = header.get("CompName") or "Auro Enterprises"
         biz_place = header.get("BusinessPlace") or "3601"
 
@@ -1816,6 +1910,9 @@ def submit_to_sap_cpi(
                 "PONumber": po_number,
                 "SES": ses_number,
                 "GRN": grn_number,
+                "TCS": tcs_val,
+                "TaxableVal": taxable_val,
+                "TotalInvVal": total_inv_val,
                 "CompName": comp_name,
                 "CompCode": comp_code,
                 "BusinessPlace": biz_place,
@@ -1850,6 +1947,9 @@ def submit_to_sap_cpi(
                 "PONumber": po_number,
                 "SES": ses_number,
                 "GRN": grn_number,
+                "TCS": tcs_val,
+                "TaxableVal": taxable_val,
+                "TotalInvVal": total_inv_val,
                 "CompName": comp_name,
                 "CompCode": comp_code,
                 "BusinessPlace": biz_place,
@@ -1882,6 +1982,9 @@ def submit_to_sap_cpi(
             "PONumber": po_number,
             "SES": ses_number,
             "GRN": grn_number,
+            "TCS": tcs_val,
+            "TaxableVal": taxable_val,
+            "TotalInvVal": total_inv_val,
             "CompName": comp_name,
             "CompCode": comp_code,
             "BusinessPlace": biz_place,
@@ -2050,7 +2153,7 @@ You are an expert Accounts Payable Data Extraction Agent for SAP S/4HANA (MIR7/M
 [HEADER DATA]
 - PONumber (CRITICAL): Search for explicit labels (e.g., "PO No", "Purchase Order", handwritten "PO:"). The value MUST be exactly 10 digits and purely numeric. Ignore generic "Buyer Order" numbers.
 - SES (CRITICAL): Search for Service Entry Sheet labels ("SES", "SERVICE ENTRY SHEET"). The value MUST be exactly 10 digits, purely numeric, and begin with "1". Return `null` if not present.
-- GRN (CRITICAL): Search for Goods Receipt Note labels ("GRN", "Goods Receipt Note", "MIGO", "Material Document"). The value MUST be exactly 10 digits, purely numeric, and begin with "5". Return `null` if not present.
+- GRN (CRITICAL): Search for Goods Receipt Note / Material Document labels ("GRN", "GRN No", "GRN #", "GRN Number", "G.R.N.", "Goods Receipt Note", "Goods Receipt", "MIGO", "Material Document", "Material Doc", "MRN", "Material Receipt", "Store Receipt Voucher", "SRV", "Inward No", "Delivery Challan", "DC No"). The value MUST be exactly 10 digits, purely numeric, and begin with "5". If preceded by letters or symbols, extract the 10 numeric digits starting with 5. Return null if not present on the invoice.
 - RefDocNo: Extract the Invoice Number.
 - DocDate (FORMAT RESTRICTION): Convert and output strictly as `DD.MM.YYYY`.
 - CompName (Buyer Name): Extract the legal name of the entity RECEIVING the invoice (Billed To). Do NOT extract the vendor name.
@@ -2064,7 +2167,7 @@ You are an expert Accounts Payable Data Extraction Agent for SAP S/4HANA (MIR7/M
   * '37' -> "3701"
   * '36' -> "3601"
 - TaxableVal: The overall total net taxable value on the invoice before GST is applied. Look for "Taxable Value" at the invoice summary level. This includes the basic item value plus any statutory additions (Royalty, DMF Cess, NMET, etc.) prior to tax.
-- TCS (CRITICAL): Search for Tax Collected at Source labels ("TCS", "Tax Collected at Source", "TCS Amount", "TCS @", "TCS Rate"). Extract the TCS amount/value associated with the invoice. Return the numeric value only, preserving decimal places if present. Do not confuse TCS with GST, CGST, SGST, IGST, or other tax components. Return null if TCS is not explicitly present on the invoice.
+- TCS (CRITICAL): Search for Tax Collected at Source labels ("TCS", "Tax Collected at Source", "TCS Amount", "TCS @", "TCS Rate", "TCS u/s 206C", "TCS 206C(1H)", "TCS Payable", "T.C.S."). Extract the TCS numeric value associated with the invoice. If printed as 0 or 0.00, or if TCS is absent, return 0.00 or null. Return numeric float value only. Do not confuse TCS with GST, CGST, SGST, IGST, or TDS.
 - TotalInvVal: The final grand total invoice amount inclusive of all taxes, duties, and round-offs.
 
 [ITEM DATA]
@@ -2212,7 +2315,7 @@ async def process_single_invoice_document(
                     system_instruction=NOTEBOOK_SYSTEM_INSTRUCTION,
                     temperature=0.0,
                     response_mime_type="application/json",
-                    response_schema=ExtractionInvoiceSchema,
+                    response_schema=GEMINI_EXTRACTION_SCHEMA,
                 ),
             )
             break
@@ -2327,7 +2430,15 @@ async def process_single_invoice_document(
             clean_text = re.sub(r"\s*```$", "", clean_text)
         payload_dict = json.loads(clean_text)
         if "HeaderData" in payload_dict:
-            payload_dict["HeaderData"]["Attachment"] = base64_attachment
+            header = payload_dict["HeaderData"]
+            header["Attachment"] = base64_attachment
+            # Guarantee all SAP standard header attributes are always initialized
+            for f in ["DocDate", "RefDocNo", "PONumber", "SES", "GRN", "CompName", "CompCode", "BusinessPlace"]:
+                if f not in header:
+                    header[f] = None if f in ("SES", "GRN") else ""
+            for nf in ["TaxableVal", "TCS", "TotalInvVal"]:
+                if nf not in header or header[nf] is None:
+                    header[nf] = 0.00
     except Exception as parse_e:
         alert_service.send_failure_alert(
             failure_type="JSON_PARSING_FAILED",
@@ -2503,6 +2614,16 @@ async def process_single_invoice_document(
                 "status": "HITL_REQUIRED",
                 "error_info": err_info,
                 "missing_fields": err_info.get("target_fields", []),
+                "ref_doc_no": header.get("RefDocNo"),
+                "po_number": header.get("PONumber"),
+                "ses_number": header.get("SES"),
+                "grn_number": header.get("GRN"),
+                "tcs": header.get("TCS"),
+                "taxable_val": header.get("TaxableVal"),
+                "total_inv_val": header.get("TotalInvVal"),
+                "comp_code": header.get("CompCode"),
+                "comp_name": header.get("CompName"),
+                "business_place": header.get("BusinessPlace"),
                 "extracted_data": payload_dict,
                 "sap_document_number": None,
                 "telemetry": telemetry,
@@ -2514,7 +2635,7 @@ async def process_single_invoice_document(
                 trace_id=trace_id,
                 severity="WARNING",
                 message=f"Invoice '{filename}' routed to Human-in-the-Loop: {err_info['error_title']}.",
-                metadata={"missing_fields": err_info.get("target_fields")},
+                metadata={"missing_fields": err_info.get("target_fields"), "po": header.get("PONumber"), "ses": header.get("SES"), "grn": header.get("GRN")},
             )
             # Universal Alert: Send failure alert email to aic1176@aurogroup.com via Power Automate
             alert_service.send_failure_alert(
@@ -2524,7 +2645,15 @@ async def process_single_invoice_document(
                 user_email=user_email,
                 error_title=f"HITL Review Required - {err_info['error_title']}",
                 error_detail=err_info.get("error_message", "PO or SES unavailable. Human review required."),
-                metadata={"missing_fields": err_info.get("target_fields")},
+                metadata={
+                    "RefDocNo": header.get("RefDocNo"),
+                    "PONumber": header.get("PONumber"),
+                    "SES": header.get("SES"),
+                    "GRN": header.get("GRN"),
+                    "TCS": header.get("TCS"),
+                    "TotalGross": header.get("TotalInvVal"),
+                    "missing_fields": err_info.get("target_fields"),
+                },
             )
             return {
                 "status": "HITL_REQUIRED",
@@ -2543,6 +2672,16 @@ async def process_single_invoice_document(
                 "submitted_by": user_email,
                 "status": "VALIDATION_FAILED",
                 "error_info": err_info,
+                "ref_doc_no": header.get("RefDocNo"),
+                "po_number": header.get("PONumber"),
+                "ses_number": header.get("SES"),
+                "grn_number": header.get("GRN"),
+                "tcs": header.get("TCS"),
+                "taxable_val": header.get("TaxableVal"),
+                "total_inv_val": header.get("TotalInvVal"),
+                "comp_code": header.get("CompCode"),
+                "comp_name": header.get("CompName"),
+                "business_place": header.get("BusinessPlace"),
                 "extracted_data": payload_dict,
                 "sap_document_number": None,
                 "telemetry": telemetry,
@@ -2554,6 +2693,7 @@ async def process_single_invoice_document(
                 trace_id=trace_id,
                 severity="ERROR",
                 message=f"Validation failed for '{filename}': {err_info['error_message']}.",
+                metadata={"error_code": error_code, "error_val": error_val, "po": header.get("PONumber"), "ses": header.get("SES"), "grn": header.get("GRN")},
             )
             # TRIGGER FAILURE ALERT EMAIL TO aic1176@aurogroup.com
             alert_incident = alert_service.send_failure_alert(
@@ -2563,7 +2703,16 @@ async def process_single_invoice_document(
                 user_email=user_email,
                 error_title=err_info.get("error_title", "SAP Validation Failure"),
                 error_detail=err_info.get("error_message", "Invoice failed non-recoverable SAP business rules."),
-                metadata={"error_code": error_code, "error_val": error_val},
+                metadata={
+                    "error_code": error_code,
+                    "error_val": error_val,
+                    "RefDocNo": header.get("RefDocNo"),
+                    "PONumber": header.get("PONumber"),
+                    "SES": header.get("SES"),
+                    "GRN": header.get("GRN"),
+                    "TCS": header.get("TCS"),
+                    "TotalGross": header.get("TotalInvVal"),
+                },
             )
             return {
                 "status": "VALIDATION_FAILED",
@@ -2602,6 +2751,16 @@ async def process_single_invoice_document(
             "status": "PARKED_SUCCESS",
             "sap_document_number": belnr,
             "fiscal_year": fiscal_year,
+            "ref_doc_no": header.get("RefDocNo"),
+            "po_number": header.get("PONumber"),
+            "ses_number": header.get("SES"),
+            "grn_number": header.get("GRN"),
+            "tcs": header.get("TCS"),
+            "taxable_val": header.get("TaxableVal"),
+            "total_inv_val": header.get("TotalInvVal"),
+            "comp_code": header.get("CompCode"),
+            "comp_name": header.get("CompName"),
+            "business_place": header.get("BusinessPlace"),
             "cpi_status": "S",
             "sap_status": "S",
             "cpi_response": cpi_result.get("cpi_response", {}),
@@ -2616,7 +2775,7 @@ async def process_single_invoice_document(
             trace_id=trace_id,
             severity="INFO",
             message=f"Invoice '{filename}' successfully parked in SAP S/4HANA (BELNR #{belnr}, Year {fiscal_year}).",
-            metadata={"belnr": belnr, "year": fiscal_year, "po": header.get("PONumber")},
+            metadata={"belnr": belnr, "year": fiscal_year, "po": header.get("PONumber"), "ses": header.get("SES"), "grn": header.get("GRN"), "tcs": header.get("TCS")},
         )
         return {
             "status": "PARKED_SUCCESS",
@@ -2653,6 +2812,16 @@ async def process_single_invoice_document(
                 "submitted_by": user_email,
                 "status": "DUPLICATE_DETECTED",
                 "error_info": err_info,
+                "ref_doc_no": header.get("RefDocNo"),
+                "po_number": header.get("PONumber"),
+                "ses_number": header.get("SES"),
+                "grn_number": header.get("GRN"),
+                "tcs": header.get("TCS"),
+                "taxable_val": header.get("TaxableVal"),
+                "total_inv_val": header.get("TotalInvVal"),
+                "comp_code": header.get("CompCode"),
+                "comp_name": header.get("CompName"),
+                "business_place": header.get("BusinessPlace"),
                 "sap_message": sap_err_msg,
                 "extracted_data": payload_dict,
                 "sap_document_number": None,
@@ -2680,7 +2849,12 @@ async def process_single_invoice_document(
                     f"was confirmed as duplicate in SAP CPI response payload: {sap_err_msg}"
                 ),
                 metadata={
-                    "ref_doc_no": ref_doc_no,
+                    "RefDocNo": ref_doc_no,
+                    "PONumber": header.get("PONumber"),
+                    "SES": header.get("SES"),
+                    "GRN": header.get("GRN"),
+                    "TCS": header.get("TCS"),
+                    "TotalGross": header.get("TotalInvVal"),
                     "existing_doc": existing_doc,
                     "comp_code": comp_code,
                     "sap_message": sap_err_msg,
@@ -2712,6 +2886,16 @@ async def process_single_invoice_document(
                 "status": "SAP_REJECTED",
                 "cpi_status": "E",
                 "sap_status": "E",
+                "ref_doc_no": header.get("RefDocNo"),
+                "po_number": header.get("PONumber"),
+                "ses_number": header.get("SES"),
+                "grn_number": header.get("GRN"),
+                "tcs": header.get("TCS"),
+                "taxable_val": header.get("TaxableVal"),
+                "total_inv_val": header.get("TotalInvVal"),
+                "comp_code": header.get("CompCode"),
+                "comp_name": header.get("CompName"),
+                "business_place": header.get("BusinessPlace"),
                 "cpi_response": cpi_result.get("cpi_response", {}),
                 "error_info": err_info,
                 "sap_document_number": None,
@@ -2736,7 +2920,15 @@ async def process_single_invoice_document(
                 user_email=user_email,
                 error_title="SAP S/4HANA BAPI Rejection",
                 error_detail=sap_err_msg,
-                metadata={"sap_response": cpi_result},
+                metadata={
+                    "RefDocNo": header.get("RefDocNo"),
+                    "PONumber": header.get("PONumber"),
+                    "SES": header.get("SES"),
+                    "GRN": header.get("GRN"),
+                    "TCS": header.get("TCS"),
+                    "TotalGross": header.get("TotalInvVal"),
+                    "sap_response": cpi_result,
+                },
             )
 
             return {
@@ -3396,6 +3588,16 @@ async def resolve_hitl_invoice(
         invoice["resolved_at"] = audit_service.now_iso()
         invoice["sap_document_number"] = belnr
         invoice["fiscal_year"] = fiscal_year
+        invoice["ref_doc_no"] = header.get("RefDocNo")
+        invoice["po_number"] = header.get("PONumber")
+        invoice["ses_number"] = header.get("SES")
+        invoice["grn_number"] = header.get("GRN")
+        invoice["tcs"] = header.get("TCS")
+        invoice["taxable_val"] = header.get("TaxableVal")
+        invoice["total_inv_val"] = header.get("TotalInvVal")
+        invoice["comp_code"] = header.get("CompCode")
+        invoice["comp_name"] = header.get("CompName")
+        invoice["business_place"] = header.get("BusinessPlace")
         invoice["cpi_status"] = "S"
         invoice["sap_status"] = "S"
         invoice["cpi_response"] = cpi_result.get("cpi_response", {})
@@ -3409,7 +3611,7 @@ async def resolve_hitl_invoice(
             trace_id=trace_id,
             severity="INFO",
             message=f"Invoice '{trace_id}' successfully resolved via HITL by {user_email} and parked in SAP (BELNR #{belnr}, Year {fiscal_year}).",
-            metadata={"belnr": belnr, "year": fiscal_year, "po": header.get("PONumber")},
+            metadata={"belnr": belnr, "year": fiscal_year, "po": header.get("PONumber"), "ses": header.get("SES"), "grn": header.get("GRN"), "tcs": header.get("TCS")},
         )
 
         return JSONResponse(content={
@@ -3443,6 +3645,16 @@ async def resolve_hitl_invoice(
             invoice["status"] = "DUPLICATE_DETECTED"
             invoice["cpi_status"] = "E"
             invoice["sap_status"] = "E"
+            invoice["ref_doc_no"] = header.get("RefDocNo")
+            invoice["po_number"] = header.get("PONumber")
+            invoice["ses_number"] = header.get("SES")
+            invoice["grn_number"] = header.get("GRN")
+            invoice["tcs"] = header.get("TCS")
+            invoice["taxable_val"] = header.get("TaxableVal")
+            invoice["total_inv_val"] = header.get("TotalInvVal")
+            invoice["comp_code"] = header.get("CompCode")
+            invoice["comp_name"] = header.get("CompName")
+            invoice["business_place"] = header.get("BusinessPlace")
             invoice["cpi_response"] = cpi_result.get("cpi_response", {})
             invoice["error_info"] = err_info
             invoice["sap_message"] = sap_err_msg
@@ -3469,7 +3681,12 @@ async def resolve_hitl_invoice(
                     f"SAP CPI Rejection: {sap_err_msg}"
                 ),
                 metadata={
-                    "ref_doc_no": ref_doc_no,
+                    "RefDocNo": ref_doc_no,
+                    "PONumber": header.get("PONumber"),
+                    "SES": header.get("SES"),
+                    "GRN": header.get("GRN"),
+                    "TCS": header.get("TCS"),
+                    "TotalGross": header.get("TotalInvVal"),
                     "existing_doc": existing_doc,
                     "comp_code": comp_code,
                     "sap_message": sap_err_msg,
@@ -3494,6 +3711,16 @@ async def resolve_hitl_invoice(
             invoice["status"] = "SAP_REJECTED"
             invoice["cpi_status"] = "E"
             invoice["sap_status"] = "E"
+            invoice["ref_doc_no"] = header.get("RefDocNo")
+            invoice["po_number"] = header.get("PONumber")
+            invoice["ses_number"] = header.get("SES")
+            invoice["grn_number"] = header.get("GRN")
+            invoice["tcs"] = header.get("TCS")
+            invoice["taxable_val"] = header.get("TaxableVal")
+            invoice["total_inv_val"] = header.get("TotalInvVal")
+            invoice["comp_code"] = header.get("CompCode")
+            invoice["comp_name"] = header.get("CompName")
+            invoice["business_place"] = header.get("BusinessPlace")
             invoice["cpi_response"] = cpi_result.get("cpi_response", {})
             invoice["error_info"] = err_info
             audit_service.save_invoice(invoice)
@@ -3513,6 +3740,14 @@ async def resolve_hitl_invoice(
                 user_email=user_email,
                 error_title="HITL Resumed SAP BAPI Rejection",
                 error_detail=sap_err_msg,
+                metadata={
+                    "RefDocNo": header.get("RefDocNo"),
+                    "PONumber": header.get("PONumber"),
+                    "SES": header.get("SES"),
+                    "GRN": header.get("GRN"),
+                    "TCS": header.get("TCS"),
+                    "TotalGross": header.get("TotalInvVal"),
+                },
             )
 
             return JSONResponse(status_code=422, content={

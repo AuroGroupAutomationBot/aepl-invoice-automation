@@ -1683,13 +1683,13 @@
             <thead>
               <tr>
                 <th style="width: 10%; min-width: 85px;">Trace / Date</th>
-                <th style="width: 17%; min-width: 120px;">File Name</th>
-                <th style="width: 16%; min-width: 120px;">Submitter</th>
-                <th style="width: 18%; min-width: 130px;">Vendor / Ref Doc</th>
-                <th style="width: 10%; min-width: 85px;">PO Number</th>
-                <th style="width: 10%; min-width: 90px; text-align: right;">Gross (INR)</th>
-                <th style="width: 8%; min-width: 75px; text-align: center;">Status</th>
-                <th style="width: 6%; min-width: 70px; text-align: center;">SAP BELNR</th>
+                <th style="width: 16%; min-width: 120px;">File Name</th>
+                <th style="width: 15%; min-width: 120px;">Submitter</th>
+                <th style="width: 16%; min-width: 130px;">Vendor / Ref Doc</th>
+                <th style="width: 13%; min-width: 100px;">PO / SES / GRN</th>
+                <th style="width: 12%; min-width: 95px; text-align: right;">Gross / TCS (INR)</th>
+                <th style="width: 7%; min-width: 70px; text-align: center;">Status</th>
+                <th style="width: 6%; min-width: 65px; text-align: center;">SAP BELNR</th>
                 <th style="width: 5%; min-width: 55px; text-align: center;">Action</th>
               </tr>
             </thead>
@@ -3451,7 +3451,14 @@
         if (inv.trace_id) window._invoiceDataMap[inv.trace_id] = inv;
         const h = inv.extracted_data?.HeaderData || {};
         const dateStr = inv.created_at ? new Date(inv.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : "-";
-        const gross = h.TotalInvVal ? `₹ ${parseFloat(h.TotalInvVal).toLocaleString('en-IN', {minimumFractionDigits:2})}` : "-";
+        const grossVal = h.TotalInvVal != null ? h.TotalInvVal : inv.total_inv_val;
+        const gross = (grossVal != null && grossVal !== "") ? `₹ ${parseFloat(grossVal).toLocaleString('en-IN', {minimumFractionDigits:2})}` : "-";
+
+        const poVal = h.PONumber || inv.po_number || "-";
+        const sesVal = h.SES || inv.ses_number;
+        const grnVal = h.GRN || inv.grn_number;
+        const tcsVal = (h.TCS != null && h.TCS !== "") ? h.TCS : inv.tcs;
+        const tcsStr = (tcsVal != null && tcsVal !== "" && parseFloat(tcsVal) > 0) ? `₹ ${parseFloat(tcsVal).toLocaleString('en-IN', {minimumFractionDigits:2})}` : null;
 
         let stPill = "";
         if (inv.status === "PARKED_SUCCESS") stPill = `<span style="background:var(--success-light); color:var(--success); padding:2px 8px; border-radius:4px; font-weight:600; font-size:11px;">Parked</span>`;
@@ -3465,9 +3472,16 @@
             <td class="mono-val" style="font-size:11px; white-space:nowrap;"><strong>${inv.trace_id}</strong><br><span style="color:var(--slate-400); font-size:10px;">${dateStr}</span></td>
             <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${inv.filename || ''}"><strong>${inv.filename || "doc"}</strong></td>
             <td style="font-size:11px; color:var(--slate-600); word-break:break-all;">${inv.submitted_by || "User"}</td>
-            <td style="font-size:11px; line-height:1.3;"><strong>${h.RefDocNo || "-"}</strong><br><span style="color:var(--slate-500); font-size:10px; display:inline-block; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${h.CompName || ''}">${h.CompName || ""}</span></td>
-            <td class="mono-val" style="font-size:11px;">${h.PONumber || "-"}</td>
-            <td class="mono-val" style="font-weight:600; text-align:right; font-size:11px;">${gross}</td>
+            <td style="font-size:11px; line-height:1.3;"><strong>${h.RefDocNo || inv.ref_doc_no || "-"}</strong><br><span style="color:var(--slate-500); font-size:10px; display:inline-block; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${h.CompName || inv.comp_name || ''}">${h.CompName || inv.comp_name || ""}</span></td>
+            <td class="mono-val" style="font-size:11px; line-height:1.35;">
+              <strong>${poVal}</strong>
+              ${sesVal ? `<br><span style="color:var(--slate-500); font-size:10px;">SES: ${sesVal}</span>` : ''}
+              ${grnVal ? `<br><span style="color:#0284c7; font-size:10px; font-weight:600;">GRN: ${grnVal}</span>` : ''}
+            </td>
+            <td class="mono-val" style="font-weight:600; text-align:right; font-size:11px; line-height:1.35;">
+              ${gross}
+              ${tcsStr ? `<br><span style="color:#059669; font-size:10px; font-weight:600;">TCS: ${tcsStr}</span>` : ''}
+            </td>
             <td style="text-align:center;">${stPill}</td>
             <td class="mono-val" style="color:#0070f2; font-weight:700; font-size:11px; text-align:center;">${inv.sap_document_number || "-"}</td>
             <td style="text-align:center;">
@@ -3551,13 +3565,19 @@
       }
       const filtered = misInvoicesCache.filter(inv => {
         const h = inv.extracted_data?.HeaderData || {};
+        const tcsValStr = (h.TCS != null ? String(h.TCS) : (inv.tcs != null ? String(inv.tcs) : ""));
         return (
           (inv.trace_id || "").toLowerCase().includes(query) ||
           (inv.filename || "").toLowerCase().includes(query) ||
           (inv.submitted_by || "").toLowerCase().includes(query) ||
           (inv.sap_document_number || "").toLowerCase().includes(query) ||
-          (h.RefDocNo || "").toLowerCase().includes(query) ||
-          (h.PONumber || "").toLowerCase().includes(query)
+          (h.RefDocNo || inv.ref_doc_no || "").toLowerCase().includes(query) ||
+          (h.PONumber || inv.po_number || "").toLowerCase().includes(query) ||
+          (h.SES || inv.ses_number || "").toLowerCase().includes(query) ||
+          (h.GRN || inv.grn_number || "").toLowerCase().includes(query) ||
+          (h.CompName || inv.comp_name || "").toLowerCase().includes(query) ||
+          (h.CompCode || inv.comp_code || "").toLowerCase().includes(query) ||
+          tcsValStr.toLowerCase().includes(query)
         );
       });
       renderMISInvoicesTable(filtered);
