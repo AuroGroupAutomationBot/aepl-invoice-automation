@@ -47,13 +47,13 @@ FIRESTORE_LOCATION = os.getenv("FIRESTORE_LOCATION", "asia-south1")
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB strict limit per enterprise specification
 
 # Strict Whitelist & Corporate Domain Authorization
-ALLOWED_DOMAINS = {"aurogroup.com", "ent.aurogroup.com"}
+ALLOWED_DOMAINS = {"aurogroup.com", "ent.aurogroup.com", "tridentchemphar.com"}
 
 # Enterprise System Administrators
 ADMIN_EMAILS = {
     "aic1176@aurogroup.com",
     "umamaheswara.g@ent.aurogroup.com",
-    "mahender.r@ent.aurogroup.com",
+    "mahender.r@tridentchemphar.com",
 }
 
 # Sorted List & Delimited String for Multi-Admin Notification Routing
@@ -64,7 +64,7 @@ ADMIN_RECIPIENT_STR = "; ".join(ADMIN_RECIPIENT_LIST)
 ALLOWED_EMAILS = {
     "aic1176@aurogroup.com",
     "umamaheswara.g@ent.aurogroup.com",
-    "mahender.r@ent.aurogroup.com",
+    "mahender.r@tridentchemphar.com",
     "thrimurthy.b@ent.aurogroup.com",
     "someswara.k@ent.aurogroup.com",
     "pullareddy.y@ent.aurogroup.com",
@@ -206,7 +206,7 @@ PREDEFINED_USERS = {
     "mahender.r": {
         "username": "mahender.r",
         "employee_id": "90000022",
-        "email": "mahender.r@ent.aurogroup.com",
+        "email": "mahender.r@tridentchemphar.com",
         "role": "admin",
         "full_name": "Mahendra Reddy",
         "default_pwd": "AuroAdmin@2026!",

@@ -296,7 +296,7 @@ Expected JSON Response:
 | `ALERT_SENDER_EMAIL` | String | `aic1176@aurogroup.com` | From address for outgoing failure alert emails (must be a mailbox you own or have verified with your email provider). |
 | `MAIL_COLLECTION` | String | `mail` | Firestore collection path monitored by the `firestore-send-email` extension. |
 | `ALERT_WEBHOOK_URL` | String | *(Optional)* | HTTPS Webhook URL (e.g. Microsoft Power Automate HTTP trigger) for corporate alerts without SMTP. |
-| `ALLOWED_EMAIL_DOMAINS` | String | `aurogroup.com;ent.aurogroup.com` | Semicolon-delimited authorized corporate domains. |
+| `ALLOWED_EMAIL_DOMAINS` | String | `aurogroup.com;ent.aurogroup.com;tridentchemphar.com` | Semicolon-delimited authorized corporate domains. |
 | `ALLOWED_EMAILS` | String | *(Whitelisted corporate users)* | Semicolon-delimited authorized employee email addresses. |
 
 ### Automated Failure Alerts (Official Firebase Extension: `firestore-send-email`)
