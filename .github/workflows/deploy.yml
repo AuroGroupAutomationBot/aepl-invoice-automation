@@ -3,6 +3,7 @@ name: Deploy AEPL SAP Invoice Engine to Cloud Run
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 permissions:
   contents: read
