@@ -1195,12 +1195,12 @@
         <div class="auth-form-wrap" id="loginFormWrap">
           <form onsubmit="event.preventDefault(); handlePasswordLogin();">
             <div style="margin-bottom:14px;">
-              <label class="form-label" for="authIdentifierInput">Corporate Username or Email Address</label>
+              <label class="form-label" for="authIdentifierInput">Employee ID, Corporate Username, or Email</label>
               <input
                 type="text"
                 id="authIdentifierInput"
                 class="corporate-input"
-                placeholder="aic1176@aurogroup.com or username"
+                placeholder="e.g. 80000037, thrimurthy.b, or corporate email"
                 autocomplete="username"
                 autocapitalize="none"
                 spellcheck="false"
@@ -1250,67 +1250,7 @@
             </button>
           </form>
 
-          <!-- Predefined Corporate Accounts Quick Select (For Ease of Testing / Demonstration) -->
-          <div style="margin-top:20px; padding:14px; background:var(--slate-50); border:1px solid var(--slate-200); border-radius:8px;">
-            <div style="font-size:12px; font-weight:700; color:var(--slate-700); margin-bottom:8px; display:flex; align-items:center; justify-content:space-between;">
-              <span>Authorized Corporate Accounts</span>
-              <span style="font-size:11px; color:var(--slate-500); font-weight:normal;">Click account to fill</span>
-            </div>
-            <div style="display:flex; flex-direction:column; gap:6px;">
-              <button
-                type="button"
-                onclick="fillLoginCredentials('aic1176@aurogroup.com', 'AuroAdmin@2026!')"
-                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
-              >
-                <div style="font-size:12px; color:var(--slate-800);">
-                  <strong>aic1176@aurogroup.com</strong> <span style="color:var(--slate-500);">(AEPL Administrator)</span>
-                </div>
-                <span class="admin-badge">ADMIN</span>
-              </button>
-              <button
-                type="button"
-                onclick="fillLoginCredentials('hasith.g@aurogroup.com', 'AuroUser@2026!')"
-                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
-              >
-                <div style="font-size:12px; color:var(--slate-800);">
-                  <strong>hasith.g@aurogroup.com</strong> <span style="color:var(--slate-500);">(Hasith G)</span>
-                </div>
-                <span style="background:#f1f5f9; color:#475569; font-size:10px; font-weight:700; padding:2px 6px; border-radius:3px;">USER</span>
-              </button>
-              <button
-                type="button"
-                onclick="fillLoginCredentials('abigna.k@aurogroup.com', 'AuroUser@2026!')"
-                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
-              >
-                <div style="font-size:12px; color:var(--slate-800);">
-                  <strong>abigna.k@aurogroup.com</strong> <span style="color:var(--slate-500);">(Abigna K)</span>
-                </div>
-                <span style="background:#f1f5f9; color:#475569; font-size:10px; font-weight:700; padding:2px 6px; border-radius:3px;">USER</span>
-              </button>
-              <button
-                type="button"
-                onclick="fillLoginCredentials('mohithsai.g@axisclinicals.com', 'AuroUser@2026!')"
-                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
-              >
-                <div style="font-size:12px; color:var(--slate-800);">
-                  <strong>mohithsai.g@axisclinicals.com</strong> <span style="color:var(--slate-500);">(Mohith Sai G)</span>
-                </div>
-                <span style="background:#f1f5f9; color:#475569; font-size:10px; font-weight:700; padding:2px 6px; border-radius:3px;">USER</span>
-              </button>
-              <button
-                type="button"
-                onclick="fillLoginCredentials('prasanna.j@aurorealty.com', 'AuroUser@2026!')"
-                style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#ffffff; border:1px solid var(--slate-200); border-radius:6px; cursor:pointer; text-align:left;"
-              >
-                <div style="font-size:12px; color:var(--slate-800);">
-                  <strong>prasanna.j@aurorealty.com</strong> <span style="color:var(--slate-500);">(Prasanna J)</span>
-                </div>
-                <span style="background:#f1f5f9; color:#475569; font-size:10px; font-weight:700; padding:2px 6px; border-radius:3px;">USER</span>
-              </button>
-            </div>
-          </div>
-
-          <div style="margin-top:12px; font-size:12px; color:var(--slate-400); display:flex; align-items:center; gap:6px;">
+          <div style="margin-top:16px; font-size:12px; color:var(--slate-400); display:flex; align-items:center; gap:6px;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
@@ -1340,7 +1280,7 @@
               type="text"
               id="forgotIdentifierInput"
               class="corporate-input"
-              placeholder="e.g. hasith.g@aurogroup.com"
+              placeholder="e.g. 80000037, thrimurthy.b, or corporate email"
               required
               style="width:100%; box-sizing:border-box;"
             />
@@ -1783,14 +1723,15 @@
     window._firebaseSignOut = null;
     window._firebaseSignInWithCustomToken = null;
 
-    const ALLOWED_DOMAINS = ["ent.aurogroup.com", "aurogroup.com", "axisclinicals.com"];
+    const ALLOWED_DOMAINS = ["aurogroup.com", "ent.aurogroup.com"];
     const ALLOWED_EMAILS = [
       "aic1176@aurogroup.com",
-      "hasith.g@aurogroup.com",
-      "mohithsai.g@axisclinicals.com",
-      "abigna.k@aurogroup.com",
-      "admin@aurogroup.com",
-      "finance@aurogroup.com"
+      "umamaheswara.g@ent.aurogroup.com",
+      "mahender.r@ent.aurogroup.com",
+      "thrimurthy.b@ent.aurogroup.com",
+      "someswara.k@ent.aurogroup.com",
+      "pullareddy.y@ent.aurogroup.com",
+      "praveena.g@ent.aurogroup.com"
     ];
     window._invoiceDataMap = {};
     let selectedFiles = [];
@@ -1905,13 +1846,6 @@
       updateHITLBadge();
     }
 
-    // Fill credentials helper
-    window.fillLoginCredentials = (ident, pwd) => {
-      const idInput = document.getElementById("authIdentifierInput");
-      const pwdInput = document.getElementById("authPasswordInput");
-      if (idInput) idInput.value = ident;
-      if (pwdInput) pwdInput.value = pwd;
-    };
 
     // Toggle password visibility
     window.togglePasswordVisibility = (inputId, iconId) => {
@@ -2255,10 +2189,21 @@
       }
     }
 
-    // Sign out handler
+    // Sign out handler (CHECK 01: Token Revocation)
     window.logoutUser = async () => {
+      const token = window.localStorage.getItem("corporate_token");
+      if (token) {
+        try {
+          await fetch("/api/auth/logout", {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + token }
+          });
+        } catch (_) {}
+      }
       window.localStorage.removeItem("corporate_token");
       window.localStorage.removeItem("user_email");
+      window.localStorage.removeItem("user_name");
+      window.localStorage.removeItem("is_admin");
       if (window._firebaseSignOut && window._firebaseAuth) {
         try { await window._firebaseSignOut(window._firebaseAuth); } catch (_) {}
       }
@@ -3716,7 +3661,7 @@
             return;
           }
 
-          let isAdmin = email === "aic1176@aurogroup.com";
+          let isAdmin = ["aic1176@aurogroup.com", "umamaheswara.g@ent.aurogroup.com", "mahender.r@ent.aurogroup.com"].includes(email);
           try {
             const idToken = await user.getIdToken();
             const meRes = await fetch("/api/auth/me", {

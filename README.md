@@ -94,7 +94,7 @@ sequenceDiagram
 
     AP->>UI: Upload Invoice & Supporting PO / SES
     UI->>API: POST /api/park-invoice (Multipart + Firebase JWT)
-    API->>API: Validate Corporate Email (@axisclinicals.com / @aurogroup.com)
+    API->>API: Validate Corporate Email (@ent.aurogroup.com / @aurogroup.com)
     API->>API: Process in RAM: Merge to PDF + 768px FinOps Image Optimization
     API->>AI: generate_content(Model: gemini-3.8-flash, Schema: ExtractionInvoiceSchema)
     AI-->>API: Extracted JSON (HeaderData + ItemData)
@@ -173,7 +173,7 @@ erDiagram
 * **Stage-Aware Live Processing Beacon & Shimmer Progress**:
   * **Eliminated Stopwatch/Seconds Display**: Replaced ticking digital elapsed timers (e.g. `27.0s`) with an animated glowing pulse beacon and stage-aware live status badges (`● Ingesting`, `● Multimodal AI Extraction`, `● Security Screening`, `● Posting to SAP S/4HANA`), removing perceived wait time and user anxiety.
   * **Smooth Shimmer Progress Bar**: Features a subtle 3px gradient shimmer progress indicator that advances across the 4 execution stages (25% $\to$ 50% $\to$ 75% $\to$ 90% $\to$ 100%), culminating in clear terminal status pills (`✓ Parked in SAP`, `⚠ Action Required`, `⚠ SAP Rejected`).
-* **Corporate Single Sign-On Gating**: Passwordless email link authentication restricted exclusively to authorized enterprise domains (`@axisclinicals.com`, `@aurogroup.com`, `@ent.aurogroup.com`).
+* **Corporate Single Sign-On Gating**: Passwordless email link authentication restricted exclusively to authorized enterprise domains (`@aurogroup.com`, `@ent.aurogroup.com`).
 * **Strict Password Reset Workflow Isolation (NIST SP 800-63B & OWASP ASVS 2.3)**:
   * **Zero Auto-Login on Reset Links**: Accessing password reset links (`?action=reset-password&token=...`) strictly isolates the workflow—purging existing cached sessions in `localStorage` and Firebase Auth to guarantee zero unauthorized auto-login or account takeover.
   * **Mandatory Explicit Password Entry**: Reviewers and administrators must actively key in their desired new password with live NIST SP 800-63B complexity validation (length $\ge 8$, uppercase, lowercase, digit, special character).
@@ -296,7 +296,7 @@ Expected JSON Response:
 | `ALERT_SENDER_EMAIL` | String | `aic1176@aurogroup.com` | From address for outgoing failure alert emails (must be a mailbox you own or have verified with your email provider). |
 | `MAIL_COLLECTION` | String | `mail` | Firestore collection path monitored by the `firestore-send-email` extension. |
 | `ALERT_WEBHOOK_URL` | String | *(Optional)* | HTTPS Webhook URL (e.g. Microsoft Power Automate HTTP trigger) for corporate alerts without SMTP. |
-| `ALLOWED_EMAIL_DOMAINS` | String | `ent.aurogroup.com;aurogroup.com;axisclinicals.com` | Semicolon-delimited authorized corporate domains. |
+| `ALLOWED_EMAIL_DOMAINS` | String | `aurogroup.com;ent.aurogroup.com` | Semicolon-delimited authorized corporate domains. |
 | `ALLOWED_EMAILS` | String | *(Whitelisted corporate users)* | Semicolon-delimited authorized employee email addresses. |
 
 ### Automated Failure Alerts (Official Firebase Extension: `firestore-send-email`)

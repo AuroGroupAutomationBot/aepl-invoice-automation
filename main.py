@@ -47,22 +47,32 @@ FIRESTORE_LOCATION = os.getenv("FIRESTORE_LOCATION", "asia-south1")
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB strict limit per enterprise specification
 
 # Strict Whitelist & Corporate Domain Authorization
-ALLOWED_DOMAINS = {"aurogroup.com", "axisclinicals.com", "aurorealty.com"}
+ALLOWED_DOMAINS = {"aurogroup.com", "ent.aurogroup.com"}
 
-# Sole Administrator per specification
-ADMIN_EMAILS = {"aic1176@aurogroup.com"}
-
-# Authorized Corporate Users per specification
-ALLOWED_EMAILS = {
+# Enterprise System Administrators
+ADMIN_EMAILS = {
     "aic1176@aurogroup.com",
-    "hasith.g@aurogroup.com",
-    "abigna.k@aurogroup.com",
-    "mohithsai.g@axisclinicals.com",
-    "prasanna.j@aurorealty.com",
+    "umamaheswara.g@ent.aurogroup.com",
+    "mahender.r@ent.aurogroup.com",
 }
 
-# Alert Email Recipient (Default: aic1176@aurogroup.com)
-ALERT_EMAIL_RECIPIENT = os.getenv("ALERT_EMAIL_RECIPIENT", "aic1176@aurogroup.com").strip()
+# Sorted List & Delimited String for Multi-Admin Notification Routing
+ADMIN_RECIPIENT_LIST = sorted(list(ADMIN_EMAILS))
+ADMIN_RECIPIENT_STR = "; ".join(ADMIN_RECIPIENT_LIST)
+
+# Authorized Enterprise Corporate Users
+ALLOWED_EMAILS = {
+    "aic1176@aurogroup.com",
+    "umamaheswara.g@ent.aurogroup.com",
+    "mahender.r@ent.aurogroup.com",
+    "thrimurthy.b@ent.aurogroup.com",
+    "someswara.k@ent.aurogroup.com",
+    "pullareddy.y@ent.aurogroup.com",
+    "praveena.g@ent.aurogroup.com",
+}
+
+# Alert Email Recipient (Default: Multi-Admin Broadcast to all 3 corporate administrators)
+ALERT_EMAIL_RECIPIENT = os.getenv("ALERT_EMAIL_RECIPIENT", ADMIN_RECIPIENT_STR).strip()
 
 # Unified Microsoft Power Automate HTTP Trigger Webhook for ALL Email Communications
 # Stored securely in Google Secret Manager / Environment variable
@@ -105,15 +115,23 @@ app = FastAPI(title="AEPL Autonomous SAP Invoice Parking Engine", docs_url=None,
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
-    """MAANG-Grade Defense-in-Depth HTTP Security Headers Middleware."""
+    """MAANG-Grade Defense-in-Depth HTTP Security Headers Middleware (OWASP Secure Headers)."""
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com https://fonts.gstatic.com data:;"
+        "default-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com https://fonts.gstatic.com data:; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://www.gstatic.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; "
+        "font-src 'self' https://fonts.gstatic.com data:; "
+        "img-src 'self' data: blob: https:; "
+        "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com; "
+        "frame-ancestors 'none'; base-uri 'self';"
     )
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=(), payment=()"
     return response
 
 
@@ -171,45 +189,67 @@ def verify_password(password: str, hashed_str: str) -> bool:
 PREDEFINED_USERS = {
     "aic1176": {
         "username": "aic1176",
+        "employee_id": "AIC1176",
         "email": "aic1176@aurogroup.com",
         "role": "admin",
         "full_name": "AEPL Administrator",
         "default_pwd": "AuroAdmin@2026!",
     },
-    "hasith.g": {
-        "username": "hasith.g",
-        "email": "hasith.g@aurogroup.com",
+    "umamaheswara.g": {
+        "username": "umamaheswara.g",
+        "employee_id": "80000036",
+        "email": "umamaheswara.g@ent.aurogroup.com",
+        "role": "admin",
+        "full_name": "Umamaheswara Rao",
+        "default_pwd": "AuroAdmin@2026!",
+    },
+    "mahender.r": {
+        "username": "mahender.r",
+        "employee_id": "90000022",
+        "email": "mahender.r@ent.aurogroup.com",
+        "role": "admin",
+        "full_name": "Mahendra Reddy",
+        "default_pwd": "AuroAdmin@2026!",
+    },
+    "thrimurthy.b": {
+        "username": "thrimurthy.b",
+        "employee_id": "80000037",
+        "email": "thrimurthy.b@ent.aurogroup.com",
         "role": "user",
-        "full_name": "Hasith G",
+        "full_name": "Naga venkata Thrimurthy Bhamidipati",
         "default_pwd": "AuroUser@2026!",
     },
-    "abigna.k": {
-        "username": "abigna.k",
-        "email": "abigna.k@aurogroup.com",
+    "someswara.k": {
+        "username": "someswara.k",
+        "employee_id": "80000038",
+        "email": "someswara.k@ent.aurogroup.com",
         "role": "user",
-        "full_name": "Abigna K",
+        "full_name": "Someswara Rao Konatham",
         "default_pwd": "AuroUser@2026!",
     },
-    "mohithsai.g": {
-        "username": "mohithsai.g",
-        "email": "mohithsai.g@axisclinicals.com",
+    "pullareddy.y": {
+        "username": "pullareddy.y",
+        "employee_id": "80000074",
+        "email": "pullareddy.y@ent.aurogroup.com",
         "role": "user",
-        "full_name": "Mohith Sai G",
+        "full_name": "Pulla Reddy Yenumala",
         "default_pwd": "AuroUser@2026!",
     },
-    "prasanna.j": {
-        "username": "prasanna.j",
-        "email": "prasanna.j@aurorealty.com",
+    "praveena.g": {
+        "username": "praveena.g",
+        "employee_id": "80000062",
+        "email": "praveena.g@ent.aurogroup.com",
         "role": "user",
-        "full_name": "Prasanna J",
+        "full_name": "Praveena Guntuku",
         "default_pwd": "AuroUser@2026!",
     },
 }
 
 _USERS_MEM: Dict[str, Dict[str, Any]] = {}
 for uname, udata in PREDEFINED_USERS.items():
-    _USERS_MEM[uname.lower()] = {
+    user_record = {
         "username": udata["username"],
+        "employee_id": str(udata.get("employee_id", "")),
         "email": udata["email"].lower(),
         "role": udata["role"],
         "full_name": udata["full_name"],
@@ -217,12 +257,17 @@ for uname, udata in PREDEFINED_USERS.items():
         "status": "ACTIVE",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    _USERS_MEM[udata["email"].lower()] = _USERS_MEM[uname.lower()]
+    _USERS_MEM[uname.lower()] = user_record
+    _USERS_MEM[udata["email"].lower()] = user_record
+    if udata.get("employee_id"):
+        _USERS_MEM[str(udata["employee_id"]).lower()] = user_record
 
 
 # Anti-Brute Force Sliding-Window Rate Limiter & Lockout Cache
 _LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
 _LOCKED_ACCOUNTS: Dict[str, float] = {}
+_UPLOAD_ATTEMPTS: Dict[str, List[float]] = {}
+_RESET_REQUESTS: Dict[str, List[float]] = {}
 
 
 def check_rate_limit_and_lockout(identifier: str, client_ip: str) -> Optional[str]:
@@ -261,6 +306,49 @@ def reset_login_attempts(identifier: str, client_ip: str):
     for key in (identifier.lower(), client_ip):
         _LOGIN_ATTEMPTS.pop(key, None)
         _LOCKED_ACCOUNTS.pop(key, None)
+
+
+def check_upload_rate_limit(client_id: str, limit: int = 15, window_sec: int = 60) -> Optional[str]:
+    """Sliding-window rate limiter for file upload and invoice processing endpoints (CHECK 04)."""
+    now = time.time()
+    key = (client_id or "anonymous").lower().strip()
+    attempts = _UPLOAD_ATTEMPTS.setdefault(key, [])
+    attempts = [t for t in attempts if now - t < window_sec]
+    if len(attempts) >= limit:
+        _UPLOAD_ATTEMPTS[key] = attempts
+        return f"Upload rate limit exceeded ({limit} requests per minute). Please wait a moment before uploading more files."
+    attempts.append(now)
+    _UPLOAD_ATTEMPTS[key] = attempts
+    return None
+
+
+def check_password_reset_rate_limit(identifier: str, limit: int = 3, window_sec: int = 900) -> Optional[str]:
+    """Rate limiter for password recovery requests (max 3 attempts per 15 minutes per user/IP) (CHECK 04)."""
+    now = time.time()
+    key = (identifier or "anonymous").lower().strip()
+    attempts = _RESET_REQUESTS.setdefault(key, [])
+    attempts = [t for t in attempts if now - t < window_sec]
+    if len(attempts) >= limit:
+        _RESET_REQUESTS[key] = attempts
+        return "Too many password recovery requests for this account. Please check your corporate inbox or wait 15 minutes before retrying."
+    attempts.append(now)
+    _RESET_REQUESTS[key] = attempts
+    return None
+
+
+def validate_password_complexity(pwd: str) -> Optional[str]:
+    """Enforces OWASP/NIST SP 800-63B password complexity requirements (CHECK 01)."""
+    if len(pwd) < 8:
+        return "Password must be at least 8 characters in length."
+    if not re.search(r"[A-Z]", pwd):
+        return "Password must contain at least one uppercase letter (A-Z)."
+    if not re.search(r"[a-z]", pwd):
+        return "Password must contain at least one lowercase letter (a-z)."
+    if not re.search(r"\d", pwd):
+        return "Password must contain at least one numeric digit (0-9)."
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>\-_+=]", pwd):
+        return "Password must contain at least one special character (!@#$%^&*(),.?\":{}|<>)."
+    return None
 
 
 # ---------------------------------------------------------
@@ -343,8 +431,9 @@ class AlertNotificationService:
 
     def __init__(self, db):
         self.db = db
+        self.admin_emails = ADMIN_RECIPIENT_LIST
         self.recipient_email = ALERT_EMAIL_RECIPIENT
-        self.sender_email = os.getenv("ALERT_SENDER_EMAIL", self.recipient_email).strip()
+        self.sender_email = os.getenv("ALERT_SENDER_EMAIL", "aic1176@aurogroup.com").strip()
         self.mail_collection = os.getenv("MAIL_COLLECTION", "mail").strip()
         self.webhook_url = os.getenv("ALERT_WEBHOOK_URL", "").strip() or ALERT_WEBHOOK_URL
         self._incidents_mem: List[Dict[str, Any]] = []
@@ -475,7 +564,7 @@ class AlertNotificationService:
         self._incidents_mem.append(incident)
 
         logger.critical(
-            f"ALERT TRIGGERED -> Recipient: {self.recipient_email} | Incident: {incident_id} | "
+            f"ALERT TRIGGERED -> Multi-Admin Broadcast: {self.recipient_email} | Incident: {incident_id} | "
             f"Type: {failure_type} | File: {filename} | Error: {error_title} - {error_detail}"
         )
 
@@ -500,7 +589,7 @@ class AlertNotificationService:
         if self.db:
             try:
                 self.db.collection(self.mail_collection).document(incident_id).set({
-                    "to": [self.recipient_email],
+                    "to": self.admin_emails,
                     "from": self.sender_email,
                     "replyTo": self.sender_email,
                     "message": {"subject": subject, "text": plain_text, "html": html_body},
@@ -575,9 +664,23 @@ class AlertNotificationService:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "submitted_by": email,
             "error_title": "Password Reset Link Dispatched",
-            "error_detail": f"Time-limited single-use reset token dispatched to {email}. Audit copy sent to {self.recipient_email}.",
+            "error_detail": f"Time-limited single-use reset token dispatched to {email}. Audit copy sent to all corporate administrators ({self.recipient_email}).",
         }
-        return self.dispatch_power_automate(payload)
+        res = self.dispatch_power_automate(payload)
+        if self.db:
+            try:
+                self.db.collection(self.mail_collection).document(payload["incident_id"]).set({
+                    "to": [email] + self.admin_emails,
+                    "from": self.sender_email,
+                    "replyTo": self.sender_email,
+                    "message": {"subject": subject, "text": plain_text, "html": html_body},
+                    "incident_id": payload["incident_id"],
+                    "failure_type": payload["failure_type"],
+                    "timestamp": payload["timestamp"],
+                })
+            except Exception as mail_exc:
+                logger.warning(f"Firestore password reset record notice: {mail_exc}")
+        return res
 
     def send_monthly_mis_digest(
         self,
@@ -714,7 +817,22 @@ class AlertNotificationService:
             "error_title": f"Monthly MIS Executive Digest - {month_str}",
             "error_detail": f"Performance summary delivered: {parked} documents parked, {format_inr(gross_val)} processed.",
         }
-        return self.dispatch_power_automate(payload)
+        delivered = self.dispatch_power_automate(payload)
+        if self.db:
+            try:
+                self.db.collection(self.mail_collection).document(payload["incident_id"]).set({
+                    "to": self.admin_emails,
+                    "from": self.sender_email,
+                    "replyTo": self.sender_email,
+                    "message": {"subject": subject, "text": payload["text"], "html": html_body},
+                    "incident_id": payload["incident_id"],
+                    "failure_type": payload["failure_type"],
+                    "filename": payload["filename"],
+                    "timestamp": payload["timestamp"],
+                })
+            except Exception as mis_exc:
+                logger.warning(f"Firestore monthly MIS record notice: {mis_exc}")
+        return delivered
 
     def list_incidents(self, limit: int = 50) -> List[Dict[str, Any]]:
         if self.db:
@@ -1025,6 +1143,10 @@ class FirestoreAuditService:
             return _USERS_MEM[ident]
         if self.db:
             try:
+                # Query by employee_id
+                docs = self.db.collection("users").where("employee_id", "==", ident).limit(1).stream()
+                for d in docs:
+                    return d.to_dict()
                 # Query by username
                 docs = self.db.collection("users").where("username", "==", ident).limit(1).stream()
                 for d in docs:
@@ -1040,8 +1162,11 @@ class FirestoreAuditService:
     def save_user(self, user_data: Dict[str, Any]):
         uname = user_data["username"].lower()
         email = user_data["email"].lower()
+        emp_id = str(user_data.get("employee_id", "")).lower().strip()
         _USERS_MEM[uname] = user_data
         _USERS_MEM[email] = user_data
+        if emp_id:
+            _USERS_MEM[emp_id] = user_data
         if self.db:
             try:
                 self.db.collection("users").document(uname).set(user_data)
@@ -1645,11 +1770,13 @@ def validate_sap_schema(payload_dict: dict) -> Tuple[bool, Optional[str], Option
 # 7. AUTHENTICATION & SECURITY SCREENING
 # ---------------------------------------------------------
 SESSION_SECRET = os.getenv("SESSION_SECRET", "aepl-invoice-secure-session-secret-2026-key")
+_REVOKED_TOKENS: Set[str] = set()
 
 def create_corporate_session_token(email: str) -> str:
     payload = {
         "email": email.lower().strip(),
-        "exp": int(time.time()) + 86400 * 7,
+        "jti": secrets.token_hex(16),
+        "exp": int(time.time()) + 28800,  # 8 hours session expiration (CHECK 01)
         "is_admin": is_admin_user(email),
     }
     payload_json = json.dumps(payload, separators=(',', ':'))
@@ -1659,6 +1786,8 @@ def create_corporate_session_token(email: str) -> str:
 
 def verify_corporate_session_token(token: str) -> Optional[str]:
     try:
+        if token in _REVOKED_TOKENS:
+            return None
         parts = token.split(".")
         if len(parts) != 2:
             return None
@@ -1670,9 +1799,23 @@ def verify_corporate_session_token(token: str) -> Optional[str]:
         payload = json.loads(payload_json)
         if payload.get("exp", 0) < time.time():
             return None
+        if payload.get("jti") and payload["jti"] in _REVOKED_TOKENS:
+            return None
         return payload.get("email")
     except Exception:
         return None
+
+def revoke_session_token(token: str):
+    try:
+        _REVOKED_TOKENS.add(token)
+        parts = token.split(".")
+        if len(parts) == 2:
+            payload_json = base64.urlsafe_b64decode(parts[0].encode()).decode()
+            payload = json.loads(payload_json)
+            if payload.get("jti"):
+                _REVOKED_TOKENS.add(payload["jti"])
+    except Exception:
+        pass
 
 
 
@@ -2211,6 +2354,7 @@ async def process_single_invoice_document(
     8. Comprehensive Chained Firestore Audit Trail Recording
     """
     t0 = time.time()
+    filename = os.path.basename(filename.replace("\\", "/")).strip() or "document.pdf"
     trace_id = trace_id or str(uuid.uuid4())[:8]
 
     audit_service.log_event(
@@ -3170,11 +3314,18 @@ async def forgot_password(payload: ForgotPasswordRequest, request: Request):
     """
     Password Recovery Initiator:
     Generates a cryptographically random 32-byte single-use token (valid 15 mins).
-    Dispatches password reset link via Microsoft Power Automate with audit copy to aic1176@aurogroup.com.
+    Dispatches password reset link via Microsoft Power Automate with audit copy to corporate administrators.
     """
+    client_ip = request.client.host if request.client else "127.0.0.1"
     identifier = payload.identifier.strip().lower()
     if not identifier:
         raise HTTPException(status_code=400, detail="Corporate username or email is required.")
+
+    # Anti-Abuse Rate Limiting on Password Reset (CHECK 04)
+    rate_err = check_password_reset_rate_limit(f"{identifier}:{client_ip}")
+    if rate_err:
+        audit_service.record_auth_event(identifier, "LOCKED", f"Reset rate limit: {rate_err}", client_ip=client_ip)
+        raise HTTPException(status_code=429, detail=rate_err)
 
     redirect_origin = (payload.redirect_origin or "").strip()
     if not redirect_origin:
@@ -3192,7 +3343,7 @@ async def forgot_password(payload: ForgotPasswordRequest, request: Request):
         reset_url = f"{redirect_origin}/?action=reset-password&token={raw_token}&email={quote(email)}"
 
         alert_service.send_password_reset_email(email, username, reset_url)
-        audit_service.record_auth_event(email, "PASSWORD_RESET_DISPATCHED", f"Password reset email sent to {email}")
+        audit_service.record_auth_event(email, "PASSWORD_RESET_DISPATCHED", f"Password reset email sent to {email}", client_ip=client_ip)
 
     return JSONResponse({
         "status": "RESET_DISPATCHED",
@@ -3233,17 +3384,10 @@ async def reset_password(payload: ResetPasswordRequest):
     if not raw_token or not new_password:
         raise HTTPException(status_code=400, detail="Token and new password are required.")
 
-    # Validate complexity
-    if len(new_password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters in length.")
-    if not re.search(r"[A-Z]", new_password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter.")
-    if not re.search(r"[a-z]", new_password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one lowercase letter.")
-    if not re.search(r"\d", new_password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one numeric digit.")
-    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", new_password):
-        raise HTTPException(status_code=400, detail="Password must contain at least one special character.")
+    # Validate complexity using OWASP/NIST SP 800-63B validator (CHECK 01)
+    complexity_err = validate_password_complexity(new_password)
+    if complexity_err:
+        raise HTTPException(status_code=400, detail=complexity_err)
 
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
     record = audit_service.get_password_reset(token_hash)
@@ -3276,6 +3420,27 @@ async def reset_password(payload: ResetPasswordRequest):
         "status": "SUCCESS",
         "message": "Password updated successfully. You may now log in with your new credentials.",
     })
+
+
+@app.post("/api/auth/logout")
+async def corporate_logout(
+    authorization: Optional[str] = Header(default=None),
+    x_firebase_token: Optional[str] = Header(default=None),
+):
+    """
+    Enterprise Single Sign-Out & Token Revocation Gateway (CHECK 01).
+    Explicitly blacklists the corporate session token, neutralizing re-use or session hijacking.
+    """
+    token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    elif x_firebase_token:
+        token = x_firebase_token.strip()
+
+    if token:
+        revoke_session_token(token)
+
+    return JSONResponse({"status": "SUCCESS", "message": "Successfully signed out and session invalidated."})
 
 
 @app.post("/api/auth/session-from-firebase")
@@ -3333,6 +3498,7 @@ async def record_login(
 
 @app.post("/api/park-invoice")
 async def park_single_invoice(
+    request: Request,
     file: UploadFile = File(...),
     authorization: Optional[str] = Header(default=None),
     x_firebase_token: Optional[str] = Header(default=None),
@@ -3343,24 +3509,44 @@ async def park_single_invoice(
     """
     user_email = verify_corporate_user(authorization, x_firebase_token)
 
+    # CHECK 04: Rate limiting on invoice ingestion
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    rate_err = check_upload_rate_limit(user_email or client_ip, limit=15, window_sec=60)
+    if rate_err:
+        raise HTTPException(status_code=429, detail=rate_err)
+
+    # CHECK 06: Sanitize filename against path traversal
+    clean_filename = os.path.basename((file.filename or "invoice.pdf").replace("\\", "/")).strip() or "invoice.pdf"
+
     content = await file.read()
     if len(content) > MAX_FILE_SIZE_BYTES:
         err_info = SAPErrorTaxonomy.format_error(
             "ERR_FILE_TOO_LARGE",
-            filename=file.filename,
+            filename=clean_filename,
             size_mb=round(len(content) / (1024 * 1024), 1),
         )
         return JSONResponse(status_code=413, content={
             "status": "VALIDATION_FAILED",
             "trace_id": str(uuid.uuid4())[:8],
-            "filename": file.filename,
+            "filename": clean_filename,
+            "error_info": err_info,
+            "extracted_data": {},
+        })
+
+    # Strict Magic-Byte Signature Sniffing (CHECK 06)
+    if not validate_file_magic_bytes(clean_filename, content):
+        err_info = SAPErrorTaxonomy.format_error("ERR_INVALID_FILE_SIGNATURE", filename=clean_filename)
+        return JSONResponse(status_code=400, content={
+            "status": "VALIDATION_FAILED",
+            "trace_id": str(uuid.uuid4())[:8],
+            "filename": clean_filename,
             "error_info": err_info,
             "extracted_data": {},
         })
 
     try:
         result = await process_single_invoice_document(
-            filename=file.filename,
+            filename=clean_filename,
             content=content,
             user_email=user_email,
         )
@@ -3369,7 +3555,7 @@ async def park_single_invoice(
         trace_id = str(uuid.uuid4())[:8]
         alert_service.send_failure_alert(
             failure_type="UNHANDLED_EXCEPTION",
-            filename=file.filename,
+            filename=clean_filename,
             trace_id=trace_id,
             user_email=user_email,
             error_title="System Exception during Invoice Processing",
@@ -3379,7 +3565,7 @@ async def park_single_invoice(
         return JSONResponse(content={
             "status": "SYSTEM_ERROR",
             "trace_id": trace_id,
-            "filename": file.filename,
+            "filename": clean_filename,
             "error_info": err_info,
             "extracted_data": {},
         })
@@ -3387,6 +3573,7 @@ async def park_single_invoice(
 
 @app.post("/api/park-invoices-batch")
 async def park_invoices_batch(
+    request: Request,
     files: List[UploadFile] = File(...),
     authorization: Optional[str] = Header(default=None),
     x_firebase_token: Optional[str] = Header(default=None),
@@ -3397,9 +3584,15 @@ async def park_invoices_batch(
     - If user uploads duplicate documents in the same batch:
       * Only the first occurrence is considered and parked in SAP through CPI.
       * The duplicate document is flagged as BATCH_DUPLICATE_DETECTED, prevented from posting to SAP,
-        and triggers a failure notification email via Power Automate to aic1176@aurogroup.com.
+        and triggers a failure notification email via Power Automate to all corporate administrators.
     """
     user_email = verify_corporate_user(authorization, x_firebase_token)
+
+    # CHECK 04: Rate limiting on invoice ingestion
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    rate_err = check_upload_rate_limit(user_email or client_ip, limit=15, window_sec=60)
+    if rate_err:
+        raise HTTPException(status_code=429, detail=rate_err)
 
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
@@ -3417,17 +3610,30 @@ async def park_invoices_batch(
     )
 
     for f in files:
+        clean_filename = os.path.basename((f.filename or "invoice.pdf").replace("\\", "/")).strip() or "invoice.pdf"
         content = await f.read()
         if len(content) > MAX_FILE_SIZE_BYTES:
             err_info = SAPErrorTaxonomy.format_error(
                 "ERR_FILE_TOO_LARGE",
-                filename=f.filename,
+                filename=clean_filename,
                 size_mb=round(len(content) / (1024 * 1024), 1),
             )
             err_res = {
                 "status": "VALIDATION_FAILED",
                 "trace_id": str(uuid.uuid4())[:8],
-                "filename": f.filename,
+                "filename": clean_filename,
+                "error_info": err_info,
+                "extracted_data": {},
+            }
+            results.append(err_res)
+            continue
+
+        if not validate_file_magic_bytes(clean_filename, content):
+            err_info = SAPErrorTaxonomy.format_error("ERR_INVALID_FILE_SIGNATURE", filename=clean_filename)
+            err_res = {
+                "status": "VALIDATION_FAILED",
+                "trace_id": str(uuid.uuid4())[:8],
+                "filename": clean_filename,
                 "error_info": err_info,
                 "extracted_data": {},
             }
@@ -3442,12 +3648,12 @@ async def park_invoices_batch(
             trace_id = str(uuid.uuid4())[:8]
             err_info = SAPErrorTaxonomy.format_error(
                 "ERR_BATCH_DUPLICATE",
-                filename=f.filename,
+                filename=clean_filename,
                 original_doc=orig_name,
             )
             invoice_record = {
                 "trace_id": trace_id,
-                "filename": f.filename,
+                "filename": clean_filename,
                 "file_size": len(content),
                 "submitted_by": user_email,
                 "status": "BATCH_DUPLICATE_DETECTED",
@@ -3462,17 +3668,17 @@ async def park_invoices_batch(
                 user_email=user_email,
                 trace_id=trace_id,
                 severity="WARNING",
-                message=f"Intra-batch duplicate detected: '{f.filename}' has identical content to '{orig_name}' in this upload batch. Skipped CPI parking.",
+                message=f"Intra-batch duplicate detected: '{clean_filename}' has identical content to '{orig_name}' in this upload batch. Skipped CPI parking.",
                 metadata={"original_file": orig_name},
             )
             alert_service.send_failure_alert(
                 failure_type="BATCH_DUPLICATE_DETECTED",
-                filename=f.filename,
+                filename=clean_filename,
                 trace_id=trace_id,
                 user_email=user_email,
-                error_title=f"Intra-Batch Duplicate Document Flagged: '{f.filename}'",
+                error_title=f"Intra-Batch Duplicate Document Flagged: '{clean_filename}'",
                 error_detail=(
-                    f"Document '{f.filename}' is an intra-batch duplicate of '{orig_name}'. "
+                    f"Document '{clean_filename}' is an intra-batch duplicate of '{orig_name}'. "
                     f"Only the first copy was considered and parked; this duplicate was flagged, skipped, and prevented from double-posting to SAP."
                 ),
                 metadata={"original_file": orig_name},
@@ -3480,17 +3686,17 @@ async def park_invoices_batch(
             results.append({
                 "status": "BATCH_DUPLICATE_DETECTED",
                 "trace_id": trace_id,
-                "filename": f.filename,
+                "filename": clean_filename,
                 "error_info": err_info,
                 "extracted_data": {},
             })
             continue
 
-        batch_seen_hashes[file_sha256] = f.filename
+        batch_seen_hashes[file_sha256] = clean_filename
 
         try:
             doc_result = await process_single_invoice_document(
-                filename=f.filename,
+                filename=clean_filename,
                 content=content,
                 user_email=user_email,
                 batch_seen_invoices=batch_seen_invoices,
@@ -3500,13 +3706,13 @@ async def park_invoices_batch(
             err_res = {
                 "status": "SYSTEM_ERROR",
                 "trace_id": str(uuid.uuid4())[:8],
-                "filename": f.filename,
+                "filename": clean_filename,
                 "error_info": SAPErrorTaxonomy.format_error("ERR_SYSTEM_EXCEPTION", detail=str(exc)),
                 "extracted_data": {},
             }
             alert_service.send_failure_alert(
                 failure_type="BATCH_DOCUMENT_EXCEPTION",
-                filename=f.filename,
+                filename=clean_filename,
                 trace_id="BATCH",
                 user_email=user_email,
                 error_title="Sequential Batch Document Exception",
